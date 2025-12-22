@@ -16,7 +16,9 @@ _last_fetch_success: bool = False
 
 # Constants
 CUSTOM_MODEL_OPTION = "-- Custom (enter below) --"
-VALID_MODEL_TYPES = ("llm", "vlm")
+
+# Patterns to exclude from model list (embedding models, etc.)
+EXCLUDED_MODEL_PATTERNS = ("embedding",)
 
 
 def validate_model_identifier(model_id: str) -> Tuple[bool, str]:
@@ -61,7 +63,7 @@ def fetch_models_from_server(server_url: str, timeout: float = 5.0) -> Tuple[Lis
 
     Returns:
         Tuple of (model_list, error_message)
-        - model_list: List of model IDs (LLM and VLM only), empty list on failure
+        - model_list: List of model IDs (excludes embedding models), empty list on failure
         - error_message: None on success, descriptive error on failure
     """
     models: List[str] = []
@@ -82,10 +84,15 @@ def fetch_models_from_server(server_url: str, timeout: float = 5.0) -> Tuple[Lis
 
         for model in data["data"]:
             model_id = model.get("id", "")
-            model_type = model.get("type", "unknown")
 
-            # Only include LLM and VLM models (exclude embeddings)
-            if model_type in VALID_MODEL_TYPES and model_id:
+            if not model_id:
+                continue
+
+            # Exclude embedding models by checking id pattern
+            model_id_lower = model_id.lower()
+            is_excluded = any(pattern in model_id_lower for pattern in EXCLUDED_MODEL_PATTERNS)
+
+            if not is_excluded:
                 # Validate the model ID before adding
                 is_valid, _ = validate_model_identifier(model_id)
                 if is_valid:
@@ -159,7 +166,7 @@ def refresh_model_cache(server_url: str, timeout: float = 5.0) -> Tuple[bool, st
     if models:
         return True, f"Successfully loaded {len(models)} models from LM Studio"
     else:
-        return True, "Connected to LM Studio but no LLM/VLM models found"
+        return True, "Connected to LM Studio but no models found (embedding models are excluded)"
 
 
 def initialize_model_cache(server_url: str, timeout: float = 5.0) -> None:
