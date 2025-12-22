@@ -369,6 +369,8 @@ class YANCLMStudio:
                 gen_config = {
                     "temperature": temperature,
                     "maxTokens": max_tokens,
+                    # Handle context overflow by truncating middle of conversation
+                    "contextOverflowPolicy": "truncateMiddle",
                 }
 
                 # Add optional parameters if not at default
@@ -381,7 +383,8 @@ class YANCLMStudio:
                 if draft_model:
                     gen_config["draftModel"] = draft_model
 
-                troubleshooting_lines.append(f"[INFO] Generating (temp={temperature}, max_tokens={max_tokens})...")
+                troubleshooting_lines.append(f"[INFO] Config: maxTokens={max_tokens}, temp={temperature}")
+                troubleshooting_lines.append("[INFO] Generating...")
 
                 # Generate response
                 response = model.respond(chat, config=gen_config)
@@ -412,6 +415,9 @@ class YANCLMStudio:
             error_str = str(e).lower()
             if "connection" in error_str or "refused" in error_str:
                 troubleshooting_lines.append("[HINT] Ensure LM Studio is running with server enabled")
+            elif "context" in error_str or "length" in error_str or "2048" in error_str:
+                troubleshooting_lines.append("[HINT] Context length exceeded. In LM Studio, increase the model's context length setting")
+                troubleshooting_lines.append("[HINT] Note: maxTokens limits OUTPUT tokens; contextLength limits TOTAL tokens (input + output)")
             elif "not found" in error_str or "model" in error_str:
                 troubleshooting_lines.append("[HINT] Check model identifier matches LM Studio exactly")
 
