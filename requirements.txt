@@ -1,2 +1,4 @@
-lmstudio
-msgspec
+lmstudio>=1.0.0
+requests>=2.25.0
+Pillow>=9.0.0
+numpy>=1.21.0

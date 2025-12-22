@@ -1,45 +1,86 @@
 # YANC_LMStudio
 
-A custom node for a LMStudio integration into ComfyUI.
-
-## Updates
-The new version is now using the LMStudio python SDK. With this it is possible to send images to vision enabled models. Unloading of models is now also possible for remote sessions.
+A ComfyUI custom node for integrating LM Studio's local LLM/VLM inference.
 
 ## Features
 
-- Prompts can be sent to LMStudio via HTTP API endpoint.
-- Handles 400 errors during API requests, attempting alternative approaches if needed.
-- Supports system messages for structured prompting.
-- Allows configuration of model identifiers and parameters like temperature and max_tokens.
-- Includes optional model unloading in LMStudio and ComfyUI after usage.
+- **Automatic Model Discovery**: Models are fetched from LM Studio at ComfyUI startup
+- **Vision Model Support**: Send images to VLM models (LLaVA, Qwen-VL, etc.)
+- **Reasoning Extraction**: Separate thinking/reasoning from final response
+- **Speculative Decoding**: Optional draft model support
+- **VRAM Management**: Unload models after use
 
 ## Installation
-
-To install the required dependencies browse to your custom_nodes folder inside of ComfyUI, open a command line and clone this repository or install via ComfyUI Manager:
 ```bash
+cd ComfyUI/custom_nodes
 git clone https://github.com/ALatentPlace/YANC_LMStudio.git
+cd YANC_LMStudio
+pip install -r requirements.txt
 ```
-Please install the requirements.txt after cloning.
 
-## Usage
+Or install via ComfyUI Manager.
 
-The node will put itself in the folders of my other node collection (YANC). You will then find it in the subfolder "LMStudio".
+## Setup
 
-## Configuration Options
+1. **Start LM Studio** with the server enabled (default: `http://127.0.0.1:1234`)
+2. **Start ComfyUI** - models are auto-fetched at startup
+3. Find the node under **YANC → LMStudio**
 
-- `prompt`: The input prompt to be sent to the AI model inside of LMStudio.
-- `image`: Image input for vision enabled models.
-- `model_identifier`: Identifier for the specific model used. Can be found in LMStudio.
-- `draft_model`: Model for speculative decoding.
-- `system_message`: A multi-line system prompt that sets instructions to the LLM.
-- `reasoning_tag`: Tag used to identify reasoning sections.
-- `seed`: Random seed (0 by default). Set it to fixed to prevent generations.
-- `ip`: Hostname or IP address of the LMStudio service.
-- `port`: Port number to connect to.
-- `temperature`: Controls randomness in output, between 0.1 and 1.0.
-- `max_tokens`: Maximum length of the generated response.
+## Model Selection
 
-## Model Handling
+### Automatic (Recommended)
+Models are fetched from LM Studio's `/v1/models` endpoint when ComfyUI starts. Select from the dropdown.
 
-- `unload_llm`: Boolean flag to unload the LLM after use (default: False).
-- `unload_comfy_models`: Boolean flag to unload COMFY models before sending a request to LMStudio (default: False).
+**Requirement:** LM Studio must be running before starting ComfyUI.
+
+### Manual Entry
+If LM Studio wasn't running at startup or you added models later:
+1. Select `-- Custom (enter below) --` from dropdown
+2. Enter model identifier in `custom_model_name`
+3. Find identifiers in LM Studio's model list
+
+### Refresh Models
+Enable `refresh_models`, queue once, then disable. Updates take effect on next node load.
+
+## Custom Server Address
+
+Default: `http://127.0.0.1:1234`
+
+To change, edit `lms_config/user_config.json`:
+```json
+{
+    "server_host": "192.168.1.100",
+    "server_port": 1234,
+    "timeout_seconds": 5
+}
+```
+This file survives git updates.
+
+## Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| temperature | 0.7 | Randomness (0=deterministic, 1+=creative) |
+| max_tokens | 1024 | Maximum response length |
+| top_p | 1.0 | Nucleus sampling (lower=more focused) |
+| repeat_penalty | 1.0 | Reduce repetition (1.1-1.3 recommended) |
+| seed | 0 | Reproducibility (0=random) |
+
+## Outputs
+
+- **response**: The generated text
+- **reasoning**: Extracted thinking/reasoning (if reasoning_tag found)
+- **troubleshooting**: Status messages, errors, and hints
+
+## Troubleshooting
+
+Check the `troubleshooting` output for detailed status information.
+
+**Common Issues:**
+- "Cannot connect": Ensure LM Studio server is running
+- "Model not found": Verify model identifier matches LM Studio
+- Empty dropdown: Start LM Studio before ComfyUI, or use manual entry
+
+## License
+
+MIT License

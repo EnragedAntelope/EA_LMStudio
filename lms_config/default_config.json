@@ -1,0 +1,6 @@
+{
+    "_comment": "Default configuration reference. Do not edit. Create user_config.json to override.",
+    "server_host": "127.0.0.1",
+    "server_port": 1234,
+    "timeout_seconds": 5
+}
