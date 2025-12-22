@@ -3,7 +3,7 @@ YANC LM Studio Node - ComfyUI integration for LM Studio
 Provides text generation using local LLM/VLM models via LM Studio server.
 """
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from tempfile import NamedTemporaryFile
 import numpy as np
 from PIL import Image
@@ -40,6 +40,24 @@ _startup_server_url = _config_manager.get_server_url()
 _startup_timeout = _config_manager.get_timeout()
 initialize_model_cache(_startup_server_url, _startup_timeout)
 
+# Image resize options
+IMAGE_RESIZE_OPTIONS = [
+    "No Resize",
+    "Low (512px)",
+    "Medium (768px)",
+    "High (1024px)",
+    "Ultra (1536px)",
+]
+
+# Mapping of resize option to max dimension
+RESIZE_DIMENSIONS = {
+    "No Resize": None,
+    "Low (512px)": 512,
+    "Medium (768px)": 768,
+    "High (1024px)": 1024,
+    "Ultra (1536px)": 1536,
+}
+
 
 class YANCLMStudio:
     """
@@ -60,37 +78,40 @@ class YANCLMStudio:
 
         return {
             "required": {
+                # --- Prompts first ---
+                "system_message": ("STRING", {
+                    "multiline": True,
+                    "default": "You are a helpful assistant.",
+                    "tooltip": "System prompt that defines the LLM's role and behavior. Sets the context for all responses."
+                }),
                 "prompt": ("STRING", {
                     "multiline": True,
                     "default": "",
-                    "tooltip": "The input prompt to send to the LLM. This is your main request or question."
+                    "tooltip": "The user prompt to send to the LLM. This is your main request or question."
                 }),
+                # --- Model selection ---
                 "model_selection": (model_choices, {
                     "default": default_model,
                     "tooltip": "Select a model from LM Studio. Models are fetched at ComfyUI startup. Select 'Custom' to manually enter a model identifier."
                 }),
                 "custom_model_name": ("STRING", {
                     "default": "",
-                    "tooltip": "Manual model identifier. Only used when 'Custom' is selected above. Find identifiers in LM Studio's model list or server logs."
+                    "tooltip": "Manual model identifier. Only used when 'Custom' is selected above. Find identifiers in LM Studio's model list."
                 }),
-                "system_message": ("STRING", {
-                    "multiline": True,
-                    "default": "You are a helpful assistant.",
-                    "tooltip": "System prompt that defines the LLM's role and behavior. Sets the context for all responses."
+                # --- Generation parameters ---
+                "max_tokens": ("INT", {
+                    "default": 1024,
+                    "min": 1,
+                    "max": 131072,
+                    "step": 1,
+                    "tooltip": "Maximum OUTPUT tokens for the response. This limits reply length, not input. The model's context window (input+output) is set in LM Studio when loading. Context must exceed max_tokens for full output."
                 }),
                 "temperature": ("FLOAT", {
                     "default": 0.7,
                     "min": 0.0,
                     "max": 2.0,
                     "step": 0.05,
-                    "tooltip": "Controls randomness. Lower (0.1-0.3) = focused/deterministic. Higher (0.7-1.0) = creative/varied. Default: 0.7"
-                }),
-                "max_tokens": ("INT", {
-                    "default": 1024,
-                    "min": 1,
-                    "max": 131072,
-                    "step": 1,
-                    "tooltip": "Maximum tokens in the response. Longer responses need more tokens. 1 token ~ 4 characters."
+                    "tooltip": "Controls randomness. Lower (0.1-0.3) = focused/deterministic. Higher (0.7-1.0) = creative/varied."
                 }),
                 "seed": ("INT", {
                     "default": 0,
@@ -100,38 +121,55 @@ class YANCLMStudio:
                 }),
             },
             "optional": {
-                "image": ("IMAGE", {
-                    "tooltip": "Optional image input for vision-enabled models (VLMs like LLaVA, Qwen-VL). Ignored by text-only models."
+                # --- Image inputs (for VLMs) ---
+                "image_resize": (IMAGE_RESIZE_OPTIONS, {
+                    "default": "Medium (768px)",
+                    "tooltip": "Resize images before processing. Smaller = faster inference. 'No Resize' keeps original size. Only applies when images are connected."
                 }),
+                "image1": ("IMAGE", {
+                    "tooltip": "First image input for vision models (VLMs). Leave unconnected for text-only inference."
+                }),
+                "image2": ("IMAGE", {
+                    "tooltip": "Second image input for multi-image VLMs. Not all VLMs support multiple images."
+                }),
+                "image3": ("IMAGE", {
+                    "tooltip": "Third image input for multi-image VLMs. Not all VLMs support multiple images."
+                }),
+                "image4": ("IMAGE", {
+                    "tooltip": "Fourth image input for multi-image VLMs. Not all VLMs support multiple images."
+                }),
+                # --- Advanced model options ---
                 "draft_model_selection": (model_choices, {
                     "default": default_model,
-                    "tooltip": "Optional draft model for speculative decoding. Select 'Custom' and leave custom field empty to disable."
+                    "tooltip": "Optional draft model for speculative decoding (faster inference). Select 'Custom' and leave empty to disable."
                 }),
                 "custom_draft_model": ("STRING", {
                     "default": "",
-                    "tooltip": "Manual draft model identifier. Only used when draft 'Custom' is selected. Leave empty to disable speculative decoding."
+                    "tooltip": "Manual draft model identifier. Only used when draft 'Custom' is selected. Leave empty to disable."
                 }),
+                # --- Sampling parameters ---
                 "top_p": ("FLOAT", {
                     "default": 1.0,
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.05,
-                    "tooltip": "Nucleus sampling threshold. Lower values (0.1-0.9) = more focused. 1.0 = disabled. Use with temperature. Default: 1.0"
+                    "tooltip": "Nucleus sampling threshold. Lower values (0.1-0.9) = more focused. 1.0 = disabled."
                 }),
                 "repeat_penalty": ("FLOAT", {
                     "default": 1.0,
                     "min": 0.0,
                     "max": 2.0,
                     "step": 0.05,
-                    "tooltip": "Penalizes repeated tokens. Higher values (1.1-1.3) reduce repetition. 1.0 = disabled. Default: 1.0"
+                    "tooltip": "Penalizes repeated tokens. Higher values (1.1-1.3) reduce repetition. 1.0 = disabled."
                 }),
+                # --- Extraction and management ---
                 "reasoning_tag": ("STRING", {
                     "default": "<think>",
                     "tooltip": "Opening tag to identify reasoning sections (e.g., '<think>' for DeepSeek R1). Reasoning is extracted to separate output."
                 }),
                 "unload_llm": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Unload the LLM from LM Studio after generation. Frees VRAM but adds reload time on next use."
+                    "default": True,
+                    "tooltip": "Unload the LLM from LM Studio after generation. Recommended to free VRAM for image generation."
                 }),
                 "unload_comfy_models": ("BOOLEAN", {
                     "default": False,
@@ -139,7 +177,7 @@ class YANCLMStudio:
                 }),
                 "refresh_models": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Re-fetch model list from LM Studio server. Enable this, queue once, then disable. Updates the dropdown for next use."
+                    "tooltip": "Re-fetch model list from LM Studio server. Enable, queue once, then disable. Updates dropdown on next node load."
                 }),
             }
         }
@@ -179,8 +217,46 @@ class YANCLMStudio:
 
         return model_id, None
 
-    def _convert_image_to_pil(self, image_tensor) -> Optional[Image.Image]:
-        """Convert ComfyUI image tensor to PIL Image for vision models."""
+    def _resize_image(self, pil_image: Image.Image, max_dimension: Optional[int]) -> Image.Image:
+        """
+        Resize image to fit within max_dimension while preserving aspect ratio.
+
+        Args:
+            pil_image: PIL Image to resize
+            max_dimension: Maximum size for longest edge, or None to skip resize
+
+        Returns:
+            Resized PIL Image (or original if no resize needed)
+        """
+        if max_dimension is None:
+            return pil_image
+
+        width, height = pil_image.size
+        max_current = max(width, height)
+
+        # Only resize if image is larger than target
+        if max_current <= max_dimension:
+            return pil_image
+
+        # Calculate new dimensions preserving aspect ratio
+        scale = max_dimension / max_current
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+
+        # Use LANCZOS for high-quality downscaling
+        return pil_image.resize((new_width, new_height), Image.LANCZOS)
+
+    def _convert_image_to_pil(self, image_tensor, resize_option: str = "No Resize") -> Optional[Image.Image]:
+        """
+        Convert ComfyUI image tensor to PIL Image, optionally resizing.
+
+        Args:
+            image_tensor: ComfyUI image tensor
+            resize_option: Resize option from IMAGE_RESIZE_OPTIONS
+
+        Returns:
+            PIL Image or None if conversion fails
+        """
         try:
             # ComfyUI images are [B, H, W, C] float tensors in 0-1 range
             if image_tensor is None:
@@ -196,7 +272,14 @@ class YANCLMStudio:
             img_array = (img_array * 255).astype(np.uint8)
 
             # Create PIL Image
-            return Image.fromarray(img_array)
+            pil_image = Image.fromarray(img_array)
+
+            # Apply resize if specified
+            max_dim = RESIZE_DIMENSIONS.get(resize_option)
+            if max_dim is not None:
+                pil_image = self._resize_image(pil_image, max_dim)
+
+            return pil_image
 
         except Exception as e:
             logger.error(f"Failed to convert image: {e}")
@@ -249,20 +332,24 @@ class YANCLMStudio:
 
     def generate(
         self,
+        system_message: str,
         prompt: str,
         model_selection: str,
         custom_model_name: str,
-        system_message: str,
-        temperature: float,
         max_tokens: int,
+        temperature: float,
         seed: int,
-        image=None,
+        image_resize: str = "Medium (768px)",
+        image1=None,
+        image2=None,
+        image3=None,
+        image4=None,
         draft_model_selection: str = CUSTOM_MODEL_OPTION,
         custom_draft_model: str = "",
         top_p: float = 1.0,
         repeat_penalty: float = 1.0,
         reasoning_tag: str = "<think>",
-        unload_llm: bool = False,
+        unload_llm: bool = True,
         unload_comfy_models: bool = False,
         refresh_models: bool = False
     ) -> Tuple[str, str, str]:
@@ -327,14 +414,24 @@ class YANCLMStudio:
             model_management.unload_all_models()
             model_management.soft_empty_cache()
 
-        # Prepare image for vision models
-        pil_image = None
-        if image is not None:
-            pil_image = self._convert_image_to_pil(image)
-            if pil_image:
-                troubleshooting_lines.append("[INFO] Image prepared for vision model")
-            else:
-                troubleshooting_lines.append("[WARNING] Failed to process image input")
+        # Collect and process images
+        image_inputs = [image1, image2, image3, image4]
+        pil_images: List[Image.Image] = []
+
+        for idx, img_tensor in enumerate(image_inputs, start=1):
+            if img_tensor is not None:
+                pil_img = self._convert_image_to_pil(img_tensor, image_resize)
+                if pil_img:
+                    pil_images.append(pil_img)
+                    if image_resize != "No Resize":
+                        troubleshooting_lines.append(f"[INFO] Image {idx}: {pil_img.size[0]}x{pil_img.size[1]} (resized)")
+                    else:
+                        troubleshooting_lines.append(f"[INFO] Image {idx}: {pil_img.size[0]}x{pil_img.size[1]}")
+                else:
+                    troubleshooting_lines.append(f"[WARNING] Failed to process image {idx}")
+
+        if pil_images:
+            troubleshooting_lines.append(f"[INFO] Total images for VLM: {len(pil_images)}")
 
         # Build inference request
         try:
@@ -354,14 +451,18 @@ class YANCLMStudio:
                 # Build chat
                 chat = lms.Chat(system_message)
 
-                # Add user message (with optional image)
-                if pil_image:
-                    # For vision models, save to temp file and use SDK's prepare_image
-                    with NamedTemporaryFile(suffix=".jpg", delete=False) as temp:
-                        pil_image.save(temp, format="JPEG")
-                        temp.flush()
-                        image_handle = client.files.prepare_image(temp.name)
-                    chat.add_user_message(prompt, images=[image_handle])
+                # Add user message (with optional images)
+                if pil_images:
+                    # Prepare all images for the SDK
+                    image_handles = []
+                    for pil_img in pil_images:
+                        with NamedTemporaryFile(suffix=".jpg", delete=False) as temp:
+                            pil_img.save(temp, format="JPEG", quality=95)
+                            temp.flush()
+                            image_handle = client.files.prepare_image(temp.name)
+                            image_handles.append(image_handle)
+
+                    chat.add_user_message(prompt, images=image_handles)
                 else:
                     chat.add_user_message(prompt)
 
@@ -420,6 +521,8 @@ class YANCLMStudio:
                 troubleshooting_lines.append("[HINT] Note: maxTokens limits OUTPUT tokens; contextLength limits TOTAL tokens (input + output)")
             elif "not found" in error_str or "model" in error_str:
                 troubleshooting_lines.append("[HINT] Check model identifier matches LM Studio exactly")
+            elif "image" in error_str or "vision" in error_str or "multi" in error_str:
+                troubleshooting_lines.append("[HINT] This model may not support images or multiple image inputs. Try with a single image or text-only.")
 
             logger.exception("YANC_LMStudio generation error")
             return "", "", "\n".join(troubleshooting_lines)
