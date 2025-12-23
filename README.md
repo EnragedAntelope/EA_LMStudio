@@ -2,6 +2,14 @@
 
  [LM Studio](https://lmstudio.ai/) ComfyUI node integration with easy model selection and many optimizations! 
 
+ <img width="1818" height="1285" alt="image" src="https://github.com/user-attachments/assets/2f7529c3-1be8-49e3-935f-db610129d990" />
+ _Example of using as a Text-only LLM, with automated reasoning extraction_
+
+<img width="2539" height="1328" alt="image" src="https://github.com/user-attachments/assets/bea0e4dc-5608-4378-a8b5-915ec7763c88" />
+ _Example of using as a VLM, with multiple image inputs_
+
+ This node is ready to be integrated into your workflows in dozens of ways!
+
 ## Features
 
 - **Auto Model Discovery** - Models populate automatically from LM Studio at startup
