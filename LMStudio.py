@@ -77,10 +77,11 @@ COMMON_REASONING_PATTERNS = [
     (r"<reasoning>(.*?)</reasoning>", "<reasoning>", "</reasoning>"),
     # Occasionally seen
     (r"<reason>(.*?)</reason>", "<reason>", "</reason>"),
-    # GPT-OSS style (simplified pattern for the analysis channel)
-    (r"<\|start\|>assistant<\|channel\|>analysis<\|message\|>(.*?)<\|end\|>",
-     "<|start|>assistant<|channel|>analysis<|message|>", "<|end|>"),
 ]
+
+# GPT-OSS uses a channel-based format: analysis channel for reasoning, final channel for response
+GPT_OSS_ANALYSIS_PATTERN = r"<\|channel\|>analysis<\|message\|>(.*?)<\|end\|>"
+GPT_OSS_FINAL_PATTERN = r"<\|channel\|>final<\|message\|>(.*?)$"
 
 
 class YANCLMStudio:
@@ -338,6 +339,26 @@ class YANCLMStudio:
             Tuple of (response_without_reasoning, reasoning_content, detected_pattern)
             detected_pattern is None if no pattern matched
         """
+        # Check for GPT-OSS channel-based format first
+        # Format: <|channel|>analysis<|message|>...<|end|>...<|channel|>final<|message|>...
+        analysis_match = re.search(GPT_OSS_ANALYSIS_PATTERN, text, re.DOTALL)
+        if analysis_match:
+            reasoning = analysis_match.group(1).strip()
+            # Try to extract the final response
+            final_match = re.search(GPT_OSS_FINAL_PATTERN, text, re.DOTALL)
+            if final_match:
+                response = final_match.group(1).strip()
+            else:
+                # Fallback: remove analysis section and any remaining markers
+                response = re.sub(GPT_OSS_ANALYSIS_PATTERN, "", text, flags=re.DOTALL)
+                # Clean up any remaining channel markers
+                response = re.sub(r"<\|start\|>assistant", "", response)
+                response = re.sub(r"<\|channel\|>final<\|message\|>", "", response)
+                response = re.sub(r"<\|end\|>", "", response)
+                response = response.strip()
+            return response, reasoning, "<|channel|>analysis"
+
+        # Check standard tag-based patterns
         for pattern, open_tag, close_tag in COMMON_REASONING_PATTERNS:
             # Use DOTALL to match across newlines
             matches = list(re.finditer(pattern, text, re.DOTALL))
