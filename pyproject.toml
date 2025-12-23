@@ -1,14 +1,14 @@
 [project]
-name = "YANC_LMStudio"
-description = "A custom node for a LMStudio integration into ComfyUI."
+name = "EA_LMStudio"
+description = "A custom node for LM Studio integration into ComfyUI."
 version = "1.2.0"
 license = {file = "LICENSE"}
 
 [project.urls]
-Repository = "https://github.com/ALatentPlace/YANC_LMStudio"
+Repository = "https://github.com/EnragedAntelope/EA_LMStudio"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
-PublisherId = "alatentplace"
-DisplayName = "YANC_LMStudio"
+PublisherId = "enragedantelope"
+DisplayName = "EA_LMStudio"
 Icon = ""

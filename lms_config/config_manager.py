@@ -1,5 +1,5 @@
 """
-Configuration manager for YANC_LMStudio.
+Configuration manager for EA_LMStudio.
 Handles server settings with gitignore-protected user config.
 """
 import json
@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any
 
-logger = logging.getLogger("YANC_LMStudio")
+logger = logging.getLogger("EA_LMStudio")
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "server_host": "127.0.0.1",
@@ -17,7 +17,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 
 class ConfigManager:
-    """Manages YANC_LMStudio configuration with user override support."""
+    """Manages EA_LMStudio configuration with user override support."""
 
     def __init__(self):
         self.config_dir = Path(__file__).parent
@@ -74,7 +74,7 @@ class ConfigManager:
         """
         if not self.user_config_path.exists():
             template = {
-                "_comment": "YANC_LMStudio user configuration. This file is gitignored and survives updates.",
+                "_comment": "EA_LMStudio user configuration. This file is gitignored and survives updates.",
                 "_instructions": "Modify values below to override defaults. Delete this file to reset.",
                 "server_host": "127.0.0.1",
                 "server_port": 1234,

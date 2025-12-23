@@ -1,5 +1,5 @@
 """
-YANC LM Studio Node - ComfyUI integration for LM Studio
+EA LM Studio Node - ComfyUI integration for LM Studio
 Provides text generation using local LLM/VLM models via LM Studio server.
 """
 import logging
@@ -29,7 +29,7 @@ from .model_fetcher import (
 )
 
 # Setup logging
-logger = logging.getLogger("YANC_LMStudio")
+logger = logging.getLogger("EA_LMStudio")
 
 # Initialize configuration and model cache at module load
 _config_manager = ConfigManager()
@@ -84,7 +84,7 @@ GPT_OSS_ANALYSIS_PATTERN = r"<\|channel\|>analysis<\|message\|>(.*?)<\|end\|>"
 GPT_OSS_FINAL_PATTERN = r"<\|channel\|>final<\|message\|>(.*?)$"
 
 
-class YANCLMStudio:
+class EALMStudio:
     """
     LM Studio integration node for ComfyUI.
     Queries local LM Studio server for text generation with LLM/VLM models.
@@ -92,7 +92,7 @@ class YANCLMStudio:
     Note: model.respond() automatically applies the model's chat template.
     """
 
-    CATEGORY = "YANC/LMStudio"
+    CATEGORY = "EA/LMStudio"
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("response", "reasoning", "troubleshooting")
     OUTPUT_NODE = True
@@ -638,15 +638,15 @@ class YANCLMStudio:
             elif "image" in error_str or "vision" in error_str or "multi" in error_str:
                 troubleshooting_lines.append("[HINT] This model may not support images or multiple image inputs. Try with a single image or text-only.")
 
-            logger.exception("YANC_LMStudio generation error")
+            logger.exception("EA_LMStudio generation error")
             return "", "", "\n".join(troubleshooting_lines)
 
 
 # Node registration
 NODE_CLASS_MAPPINGS = {
-    "YANC_LMStudio": YANCLMStudio
+    "EA_LMStudio": EALMStudio
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "YANC_LMStudio": "YANC LM Studio"
+    "EA_LMStudio": "EA LM Studio"
 }

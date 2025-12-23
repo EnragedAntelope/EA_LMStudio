@@ -1,5 +1,5 @@
 """
-Model fetcher for YANC_LMStudio.
+Model fetcher for EA_LMStudio.
 Queries LM Studio server for available models via /v1/models endpoint.
 """
 import re
@@ -7,7 +7,7 @@ import requests
 import logging
 from typing import List, Tuple, Optional
 
-logger = logging.getLogger("YANC_LMStudio")
+logger = logging.getLogger("EA_LMStudio")
 
 # Module-level cache for models
 _cached_models: List[str] = []
@@ -79,7 +79,7 @@ def fetch_models_from_server(server_url: str, timeout: float = 5.0) -> Tuple[Lis
 
         if "data" not in data:
             error = "Unexpected response format from LM Studio (missing 'data' field)"
-            logger.warning(f"YANC_LMStudio: {error}")
+            logger.warning(f"EA_LMStudio: {error}")
             return models, error
 
         for model in data["data"]:
@@ -101,23 +101,23 @@ def fetch_models_from_server(server_url: str, timeout: float = 5.0) -> Tuple[Lis
         # Sort alphabetically for easier navigation
         models.sort(key=str.lower)
 
-        logger.info(f"YANC_LMStudio: Fetched {len(models)} models from {server_url}")
+        logger.info(f"EA_LMStudio: Fetched {len(models)} models from {server_url}")
 
     except requests.exceptions.ConnectionError:
         error = f"Cannot connect to LM Studio at {server_url}. Ensure LM Studio is running with server enabled."
-        logger.warning(f"YANC_LMStudio: {error}")
+        logger.warning(f"EA_LMStudio: {error}")
     except requests.exceptions.Timeout:
         error = f"Connection to LM Studio timed out ({timeout}s). Server may be busy or unreachable."
-        logger.warning(f"YANC_LMStudio: {error}")
+        logger.warning(f"EA_LMStudio: {error}")
     except requests.exceptions.HTTPError as e:
         error = f"LM Studio returned HTTP error: {e.response.status_code}"
-        logger.warning(f"YANC_LMStudio: {error}")
+        logger.warning(f"EA_LMStudio: {error}")
     except requests.exceptions.JSONDecodeError:
         error = "Invalid JSON response from LM Studio"
-        logger.warning(f"YANC_LMStudio: {error}")
+        logger.warning(f"EA_LMStudio: {error}")
     except Exception as e:
         error = f"Unexpected error fetching models: {type(e).__name__}: {str(e)}"
-        logger.error(f"YANC_LMStudio: {error}")
+        logger.error(f"EA_LMStudio: {error}")
 
     return models, error
 
@@ -179,8 +179,8 @@ def initialize_model_cache(server_url: str, timeout: float = 5.0) -> None:
     """
     success, message = refresh_model_cache(server_url, timeout)
     if not success:
-        logger.warning(f"YANC_LMStudio startup: {message}")
-        logger.warning("YANC_LMStudio: Models will need to be entered manually or refreshed later")
+        logger.warning(f"EA_LMStudio startup: {message}")
+        logger.warning("EA_LMStudio: Models will need to be entered manually or refreshed later")
 
 
 def get_last_fetch_error() -> Optional[str]:
