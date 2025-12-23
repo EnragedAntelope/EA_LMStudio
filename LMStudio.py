@@ -368,6 +368,18 @@ class YANCLMStudio:
                 clean_text = re.sub(pattern, "", text, flags=re.DOTALL)
                 return clean_text.strip(), "\n---\n".join(reasoning_parts).strip(), open_tag
 
+        # Fallback: Check for closing tag without opening tag (model bug/edge case)
+        # Some models forget the opening <think> but include closing </think>
+        for _, open_tag, close_tag in COMMON_REASONING_PATTERNS:
+            if close_tag in text and open_tag not in text:
+                # Split on closing tag - everything before is reasoning
+                parts = text.split(close_tag, 1)
+                if len(parts) == 2:
+                    reasoning = parts[0].strip()
+                    response = parts[1].strip()
+                    if reasoning and response:
+                        return response, reasoning, f"{close_tag} (missing open tag)"
+
         # No pattern matched
         return text, "", None
 
