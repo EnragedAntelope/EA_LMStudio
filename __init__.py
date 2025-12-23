@@ -1,6 +1,7 @@
 """
 EA_LMStudio - LM Studio integration for ComfyUI
 Provides automatic model discovery and text/vision generation.
+Many helpful optimizations and features!
 """
 from .LMStudio import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
