@@ -1,6 +1,6 @@
 # EA_LMStudio
 
-A ComfyUI custom node for local LLM/VLM inference via [LM Studio](https://lmstudio.ai/).
+ [LM Studio](https://lmstudio.ai/) ComfyUI node integration with easy model selection and many optimizations! 
 
 ## Features
 
@@ -59,4 +59,4 @@ Edit `lms_config/user_config.json`:
 
 ---
 
-*Based on [YANC_LMStudio](https://github.com/ALatentPlace/YANC_LMStudio) by A Latent Place*
+*Originally based on [YANC_LMStudio](https://github.com/ALatentPlace/YANC_LMStudio) by A Latent Place*
