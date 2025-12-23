@@ -79,6 +79,12 @@ Many reasoning models (DeepSeek R1, Qwen3, QwQ, GLM-Z1) wrap their "thinking" pr
 
 This allows you to route reasoning to a separate display or log while keeping the final response clean.
 
+### Forcing Thinking Mode
+
+Models don't always produce thinking output for simple queries. To encourage thinking:
+- **Qwen3 models**: Add `/think` to your prompt (e.g., "Explain quantum physics /think")
+- **Other models**: Use phrases like "Think step by step" or "Show your reasoning"
+
 ## Custom Server Address
 
 Default: `http://127.0.0.1:1234`

@@ -199,7 +199,7 @@ class YANCLMStudio:
                 # --- Reasoning extraction ---
                 "reasoning_mode": (REASONING_MODE_OPTIONS, {
                     "default": "Auto-detect (recommended)",
-                    "tooltip": "How to extract reasoning/thinking from model output. Auto-detect works with DeepSeek, Qwen, QwQ, GLM, GPT-OSS and similar models."
+                    "tooltip": "How to extract reasoning/thinking from model output. Auto-detect works with DeepSeek, Qwen, QwQ, GLM, GPT-OSS and similar models. Note: Models don't always produce thinking output for simple queries. For Qwen3, add '/think' to your prompt to force thinking mode."
                 }),
                 "custom_open_tag": ("STRING", {
                     "default": "<think>",
@@ -588,8 +588,8 @@ class YANCLMStudio:
                     final_response, reasoning, detected_pattern = self._extract_reasoning_auto(response_text)
                     if detected_pattern:
                         troubleshooting_lines.append(f"[INFO] Auto-detected reasoning format: {detected_pattern}")
-                    elif response_text != final_response:
-                        troubleshooting_lines.append("[INFO] Reasoning extracted")
+                    else:
+                        troubleshooting_lines.append("[INFO] No reasoning tags detected (model may not have used thinking for this query)")
                 elif reasoning_mode == "Custom tags":
                     final_response, reasoning = self._extract_reasoning_custom(
                         response_text, custom_open_tag, custom_close_tag
