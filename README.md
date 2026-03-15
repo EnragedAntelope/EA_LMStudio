@@ -38,7 +38,7 @@ pip install -r EA_LMStudio/requirements.txt
 
 ## Tips
 
-- **Models not showing?** LM Studio must be running before ComfyUI starts. Use `refresh_models` checkbox to re-fetch.
+- **Models not showing?** LM Studio must be running before ComfyUI starts. Toggle the `refresh_models` checkbox to instantly re-fetch and update the dropdowns.
 - **Context errors?** Increase context length in LM Studio settings (not max_tokens).
 - **VLM issues?** Try a smaller image resize option or single image if multi-image fails.
 - **Force thinking mode:** Add `/think` to prompts for Qwen3, or "Think step by step" for others.
