@@ -5,6 +5,7 @@ Provides text generation using local LLM/VLM models via LM Studio server.
 import logging
 import re
 from typing import Optional, Tuple, List
+import os
 from tempfile import NamedTemporaryFile
 import numpy as np
 from PIL import Image
@@ -220,7 +221,7 @@ class EALMStudio:
                 }),
                 "refresh_models": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Re-fetch model list from LM Studio server. Enable, queue once, then disable. Updates dropdown on next node load."
+                    "tooltip": "Toggle ON to re-fetch the model list from LM Studio and update the dropdowns instantly. Automatically toggles back off."
                 }),
             }
         }
@@ -468,7 +469,6 @@ class EALMStudio:
             success, message = refresh_model_cache(server_url, timeout)
             if success:
                 troubleshooting_lines.append(f"[INFO] Model refresh: {message}")
-                troubleshooting_lines.append("[INFO] Dropdown will update on next node load")
             else:
                 troubleshooting_lines.append(f"[WARNING] Model refresh failed: {message}")
 
@@ -549,12 +549,21 @@ class EALMStudio:
                 if pil_images:
                     # Prepare all images for the SDK
                     image_handles = []
-                    for pil_img in pil_images:
-                        with NamedTemporaryFile(suffix=".jpg", delete=False) as temp:
-                            pil_img.save(temp, format="JPEG", quality=95)
-                            temp.flush()
-                            image_handle = client.files.prepare_image(temp.name)
-                            image_handles.append(image_handle)
+                    temp_paths = []
+                    try:
+                        for pil_img in pil_images:
+                            with NamedTemporaryFile(suffix=".jpg", delete=False) as temp:
+                                pil_img.save(temp, format="JPEG", quality=95)
+                                temp.flush()
+                                temp_paths.append(temp.name)
+                                image_handle = client.files.prepare_image(temp.name)
+                                image_handles.append(image_handle)
+                    finally:
+                        for path in temp_paths:
+                            try:
+                                os.unlink(path)
+                            except OSError:
+                                pass
 
                     chat.add_user_message(prompt, images=image_handles)
                 else:
