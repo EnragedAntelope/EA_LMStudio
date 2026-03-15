@@ -1,6 +1,19 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+/*
+ * EA_LMStudio Model Refresh Extension
+ *
+ * Intercepts the refresh_models toggle to fetch an updated model list from
+ * the LM Studio server and update the dropdown widgets in-place.
+ *
+ * Compatibility:
+ *   - Legacy LiteGraph frontend: full support via widget.options.values
+ *   - Nodes 2.0 / Vue frontend: the server-side cache is always updated,
+ *     so a browser refresh (F5) will pick up new models even if the
+ *     in-place widget update doesn't propagate in a future Vue renderer.
+ */
+
 app.registerExtension({
     name: "EA_LMStudio.ModelRefresh",
 
@@ -29,7 +42,9 @@ app.registerExtension({
 
                     for (const widgetName of ["model_selection", "draft_model_selection"]) {
                         const w = node.widgets?.find(ww => ww.name === widgetName);
-                        if (w) {
+                        if (w && w.options) {
+                            // Replace values array (breaks shared reference intentionally
+                            // so other node instances also get the update)
                             w.options.values = choices;
                             if (!choices.includes(w.value)) {
                                 w.value = choices[0];
