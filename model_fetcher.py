@@ -5,7 +5,8 @@ Queries LM Studio server for available models via /v1/models endpoint.
 import re
 import requests
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Optional
+
 
 logger = logging.getLogger("EA_LMStudio")
 
@@ -17,11 +18,8 @@ _last_fetch_success: bool = False
 # Constants
 CUSTOM_MODEL_OPTION = "-- Custom (enter below) --"
 
-# Patterns to exclude from model list (embedding models, etc.)
-EXCLUDED_MODEL_PATTERNS = ("embedding",)
 
-
-def validate_model_identifier(model_id: str) -> Tuple[bool, str]:
+def validate_model_identifier(model_id: str) -> bool:
     """
     Validate model identifier for safety.
 
@@ -29,45 +27,63 @@ def validate_model_identifier(model_id: str) -> Tuple[bool, str]:
         model_id: The model identifier string to validate.
 
     Returns:
-        Tuple of (is_valid, error_message). error_message is empty if valid.
+        True if valid, False otherwise.
     """
     if not model_id or not model_id.strip():
-        return False, "Model identifier cannot be empty"
+        return False
 
     model_id = model_id.strip()
 
     # Check for path traversal attempts
     if ".." in model_id:
-        return False, "Model identifier contains invalid path sequence"
+        return False
 
     # Check reasonable length
     if len(model_id) > 256:
-        return False, "Model identifier exceeds maximum length (256 characters)"
+        return False
 
     # Allow alphanumeric, hyphens, underscores, dots, colons, at signs, forward slashes
     # These are common in model names like "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF"
     # or "qwen2.5-7b@q4_k_m"
     if not re.match(r'^[\w\-.:@/]+$', model_id):
-        return False, "Model identifier contains disallowed characters"
+        return False
 
-    return True, ""
+    return True
 
 
-def fetch_models_from_server(server_url: str, timeout: float = 5.0) -> Tuple[List[str], Optional[str]]:
+def _is_excluded(model_id: str, excluded_patterns: List[str]) -> bool:
+    """Check if a model should be excluded based on configured patterns."""
+    if not excluded_patterns or not model_id:
+        return False
+    model_id_lower = model_id.lower()
+    return any(pattern in model_id_lower for pattern in excluded_patterns)
+
+
+def fetch_models_from_server(
+    server_url: str,
+    timeout: float = 5.0,
+    excluded_patterns: Optional[List[str]] = None,
+) -> tuple[List[str], Optional[str]]:
     """
     Fetch available models from LM Studio server.
 
     Args:
         server_url: Base URL of LM Studio server (e.g., http://127.0.0.1:1234)
         timeout: Request timeout in seconds
+        excluded_patterns: List of substrings to exclude from model list.
+            If None, uses default ["embedding"]. Pass an empty list to include all models.
 
     Returns:
         Tuple of (model_list, error_message)
-        - model_list: List of model IDs (excludes embedding models), empty list on failure
+        - model_list: Filtered list of model IDs, empty on failure
         - error_message: None on success, descriptive error on failure
     """
     models: List[str] = []
     error: Optional[str] = None
+
+    # Default to ["embedding"] if no patterns specified
+    if excluded_patterns is None:
+        excluded_patterns = ["embedding"]
 
     endpoint = f"{server_url.rstrip('/')}/v1/models"
 
@@ -88,15 +104,14 @@ def fetch_models_from_server(server_url: str, timeout: float = 5.0) -> Tuple[Lis
             if not model_id:
                 continue
 
-            # Exclude embedding models by checking id pattern
-            model_id_lower = model_id.lower()
-            is_excluded = any(pattern in model_id_lower for pattern in EXCLUDED_MODEL_PATTERNS)
+            # Exclude models matching configured patterns
+            if _is_excluded(model_id, excluded_patterns):
+                logger.debug(f"EA_LMStudio: Excluding model '{model_id}'")
+                continue
 
-            if not is_excluded:
-                # Validate the model ID before adding
-                is_valid, _ = validate_model_identifier(model_id)
-                if is_valid:
-                    models.append(model_id)
+            # Validate the model ID before adding
+            if validate_model_identifier(model_id):
+                models.append(model_id)
 
         # Sort alphabetically for easier navigation
         models.sort(key=str.lower)
@@ -139,20 +154,26 @@ def get_model_choices() -> List[str]:
     return choices
 
 
-def refresh_model_cache(server_url: str, timeout: float = 5.0) -> Tuple[bool, str]:
+def refresh_model_cache(
+    server_url: str,
+    timeout: float = 5.0,
+    excluded_patterns: Optional[List[str]] = None,
+) -> tuple[bool, str]:
     """
     Refresh the cached model list from server.
 
     Args:
         server_url: Base URL of LM Studio server
         timeout: Request timeout in seconds
+        excluded_patterns: List of substrings to exclude from model list.
+            If None, uses default ["embedding"]. Pass an empty list to include all models.
 
     Returns:
         Tuple of (success, message)
     """
     global _cached_models, _last_fetch_error, _last_fetch_success
 
-    models, error = fetch_models_from_server(server_url, timeout)
+    models, error = fetch_models_from_server(server_url, timeout, excluded_patterns)
 
     if error:
         _last_fetch_error = error
@@ -169,7 +190,7 @@ def refresh_model_cache(server_url: str, timeout: float = 5.0) -> Tuple[bool, st
         return True, "Connected to LM Studio but no models found (embedding models are excluded)"
 
 
-def initialize_model_cache(server_url: str, timeout: float = 5.0) -> None:
+def initialize_model_cache(server_url: str, timeout: float = 5.0, excluded_patterns=None) -> None:
     """
     Initialize model cache at startup. Silent failure - just logs warning.
 
@@ -177,7 +198,7 @@ def initialize_model_cache(server_url: str, timeout: float = 5.0) -> None:
         server_url: Base URL of LM Studio server
         timeout: Request timeout in seconds
     """
-    success, message = refresh_model_cache(server_url, timeout)
+    success, message = refresh_model_cache(server_url, timeout, excluded_patterns=excluded_patterns)
     if not success:
         logger.warning(f"EA_LMStudio startup: {message}")
         logger.warning("EA_LMStudio: Models will need to be entered manually or refreshed later")

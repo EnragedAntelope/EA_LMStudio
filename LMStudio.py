@@ -40,7 +40,8 @@ _config_manager.ensure_default_config_exists()
 # Attempt to fetch models at startup
 _startup_server_url = _config_manager.get_server_url()
 _startup_timeout = _config_manager.get_timeout()
-initialize_model_cache(_startup_server_url, _startup_timeout)
+_startup_excluded_patterns = _config_manager.get_excluded_patterns()
+initialize_model_cache(_startup_server_url, _startup_timeout, excluded_patterns=_startup_excluded_patterns)
 
 # Image resize options
 IMAGE_RESIZE_OPTIONS = [
@@ -460,13 +461,14 @@ class EALMStudio:
         config = _config_manager.get_config()
         server_url = _config_manager.get_server_url()
         timeout = _config_manager.get_timeout()
+        excluded_patterns = config.get("excluded_model_patterns", [])
 
         troubleshooting_lines.append(f"[INFO] Server: {server_url}")
         troubleshooting_lines.append(f"[INFO] Cached models: {get_cached_model_count()}")
 
         # Handle model refresh request
         if refresh_models:
-            success, message = refresh_model_cache(server_url, timeout)
+            success, message = refresh_model_cache(server_url, timeout, excluded_patterns=excluded_patterns)
             if success:
                 troubleshooting_lines.append(f"[INFO] Model refresh: {message}")
             else:

@@ -53,6 +53,22 @@ Edit `lms_config/user_config.json`:
 }
 ```
 
+## Model Exclusion Patterns
+
+Exclude models from the dropdown by adding patterns to `lms_config/user_config.json`:
+```json
+{
+    "excluded_model_patterns": ["embedding", "Qwen3-Coder", "codellama"]
+}
+```
+
+- The default excludes all models containing **"embedding"**.
+- Patterns are matched as case-insensitive substrings against the full model identifier.
+- Use specific enough patterns to avoid accidentally excluding desired models (e.g., use `Qwen3-Coder` instead of just `coder`).
+- To find exact model names, check LM Studio's API: `http://127.0.0.1:1234/v1/models` (look at the `id` field).
+- The `user_config.json` file is gitignored so your settings survive updates.
+- Restart ComfyUI or toggle the **refresh_models** checkbox after changing patterns.
+
 ## Outputs
 
 | Output | Description |

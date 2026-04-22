@@ -21,8 +21,9 @@ async def _refresh_models_route(request):
     config_manager = ConfigManager()
     server_url = config_manager.get_server_url()
     timeout = config_manager.get_timeout()
+    excluded_patterns = config_manager.get_excluded_patterns()
 
-    success, message = refresh_model_cache(server_url, timeout)
+    success, message = refresh_model_cache(server_url, timeout, excluded_patterns=excluded_patterns)
     choices = get_model_choices()
     models = [m for m in choices if m != CUSTOM_MODEL_OPTION]
 

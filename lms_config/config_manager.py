@@ -5,14 +5,16 @@ Handles server settings with gitignore-protected user config.
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
+
 
 logger = logging.getLogger("EA_LMStudio")
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "server_host": "127.0.0.1",
     "server_port": 1234,
-    "timeout_seconds": 5
+    "timeout_seconds": 5,
+    "excluded_model_patterns": ["embedding"],
 }
 
 
@@ -67,6 +69,31 @@ class ConfigManager:
         config = self.get_config()
         return float(config.get("timeout_seconds", 5))
 
+    def get_excluded_patterns(self) -> List[str]:
+        """Get model exclusion patterns from config.
+
+        Returns a merged list: default patterns + user-specified additions.
+        The "embedding" pattern is always included and cannot be removed.
+        """
+        config = self.get_config()
+        val = config.get("excluded_model_patterns")
+
+        # Start with defaults
+        result: List[str] = list(DEFAULT_CONFIG["excluded_model_patterns"])
+
+        # Merge user patterns (type guard + dedup)
+        if isinstance(val, list):
+            for p in val:
+                if isinstance(p, str) and p not in result:
+                    result.append(p)
+        elif val is not None:
+            logger.warning(
+                "excluded_model_patterns in user_config.json is not a list. "
+                "Using defaults + any valid entries."
+            )
+
+        return result
+
     def create_user_config_template(self) -> None:
         """
         Create user config template file if it doesn't exist.
@@ -78,7 +105,8 @@ class ConfigManager:
                 "_instructions": "Modify values below to override defaults. Delete this file to reset.",
                 "server_host": "127.0.0.1",
                 "server_port": 1234,
-                "timeout_seconds": 5
+                "timeout_seconds": 5,
+                "excluded_model_patterns": ["embedding"],
             }
             try:
                 with open(self.user_config_path, 'w', encoding='utf-8') as f:
