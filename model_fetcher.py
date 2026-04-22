@@ -26,29 +26,30 @@ def validate_model_identifier(model_id: str) -> bool:
     Args:
         model_id: The model identifier string to validate.
 
-    Returns:
-        True if valid, False otherwise.
+        Tuple of (is_valid, error_message)
+        - is_valid: True if valid, False otherwise
+        - error_message: None if valid, descriptive error if invalid
     """
     if not model_id or not model_id.strip():
-        return False
+        return False, "Model identifier is empty"
 
     model_id = model_id.strip()
 
     # Check for path traversal attempts
     if ".." in model_id:
-        return False
+        return False, "Model identifier contains invalid path traversal (..)"
 
     # Check reasonable length
     if len(model_id) > 256:
-        return False
+        return False, "Model identifier exceeds maximum length (256 characters)"
 
     # Allow alphanumeric, hyphens, underscores, dots, colons, at signs, forward slashes
     # These are common in model names like "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF"
     # or "qwen2.5-7b@q4_k_m"
     if not re.match(r'^[\w\-.:@/]+$', model_id):
-        return False
+        return False, "Model identifier contains invalid characters (only alphanumeric, hyphens, underscores, dots, colons, @, and slashes allowed)"
 
-    return True
+    return True, None
 
 
 def _is_excluded(model_id: str, excluded_patterns: List[str]) -> bool:
@@ -110,7 +111,8 @@ def fetch_models_from_server(
                 continue
 
             # Validate the model ID before adding
-            if validate_model_identifier(model_id):
+            is_valid, _ = validate_model_identifier(model_id)
+            if is_valid:
                 models.append(model_id)
 
         # Sort alphabetically for easier navigation
