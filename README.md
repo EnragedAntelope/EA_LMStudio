@@ -75,7 +75,7 @@ Exclude models from the dropdown by adding patterns to `lms_config/user_config.j
 |--------|-------------|
 | response | Generated text (reasoning removed if extracted) |
 | reasoning | Extracted thinking content |
-| troubleshooting | Status messages and debug hints |
+| troubleshooting | Status messages, debug hints, and inference stats (tokens/sec, input/output tokens, total time) |
 
 ## License
 

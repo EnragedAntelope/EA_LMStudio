@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Optional, Tuple, List
 import os
+import time
 from tempfile import NamedTemporaryFile
 import numpy as np
 from PIL import Image
@@ -596,12 +597,24 @@ class EALMStudio:
                     troubleshooting_lines.append(f"[INFO] Sampling: top_k={top_k}, top_p={top_p}")
                 troubleshooting_lines.append("[INFO] Generating...")
 
+                start_time = time.time()
                 # Generate response
                 response = model.respond(chat, config=gen_config)
                 response_text = str(response)
 
                 troubleshooting_lines.append("[INFO] Generation complete")
                 troubleshooting_lines.append(f"[INFO] Raw response length: {len(response_text)} chars")
+
+                # Extract inference statistics
+                tokens_per_sec = getattr(response.stats, 'tokens_per_second', 0.0)
+                input_tokens = getattr(response.stats, 'prompt_tokens_count', 0)
+                output_tokens = getattr(response.stats, 'predicted_tokens_count', 0)
+                elapsed = time.time() - start_time
+
+                troubleshooting_lines.append(f"[INFO] Tokens per second: {tokens_per_sec:.2f}")
+                troubleshooting_lines.append(f"[INFO] Input tokens: {input_tokens}")
+                troubleshooting_lines.append(f"[INFO] Output tokens: {output_tokens}")
+                troubleshooting_lines.append(f"[INFO] Total time: {elapsed:.2f}s")
 
                 # Extract reasoning based on mode
                 final_response = response_text
