@@ -609,11 +609,16 @@ class EALMStudio:
                 tokens_per_sec = getattr(response.stats, 'tokens_per_second', 0.0)
                 input_tokens = getattr(response.stats, 'prompt_tokens_count', 0)
                 output_tokens = getattr(response.stats, 'predicted_tokens_count', 0)
+                time_to_first_token = getattr(response.stats, 'time_to_first_token_sec', None)
+                stop_reason = getattr(response.stats, 'stop_reason', 'unknown')
                 elapsed = time.time() - start_time
 
                 troubleshooting_lines.append(f"[INFO] Tokens per second: {tokens_per_sec:.2f}")
                 troubleshooting_lines.append(f"[INFO] Input tokens: {input_tokens}")
                 troubleshooting_lines.append(f"[INFO] Output tokens: {output_tokens}")
+                if time_to_first_token is not None:
+                    troubleshooting_lines.append(f"[INFO] Time to first token: {time_to_first_token:.3f}s")
+                troubleshooting_lines.append(f"[INFO] Stop reason: {stop_reason}")
                 troubleshooting_lines.append(f"[INFO] Total time: {elapsed:.2f}s")
 
                 # Extract reasoning based on mode

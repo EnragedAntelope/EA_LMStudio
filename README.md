@@ -17,6 +17,7 @@
 - **Reasoning Extraction** - Separates thinking from final response (DeepSeek R1, Qwen3, QwQ, etc.)
 - **Advanced Controls** - Temperature, top-k/p, repetition penalty, speculative decoding
 - **Smart Troubleshooting** - Helpful error messages with specific hints
+- **Detailed Stats** - Tokens/sec, time to first token, stop reason, and token counts in troubleshooting output
 - **VRAM Management** - Auto-unload after generation (enabled by default)
 
 ## Installation
@@ -75,7 +76,7 @@ Exclude models from the dropdown by adding patterns to `lms_config/user_config.j
 |--------|-------------|
 | response | Generated text (reasoning removed if extracted) |
 | reasoning | Extracted thinking content |
-| troubleshooting | Status messages, debug hints, and inference stats (tokens/sec, input/output tokens, total time) |
+| troubleshooting | Status messages, debug hints, and inference stats (tokens/sec, input/output tokens, time to first token, stop reason, total time) |
 
 ## License
 
