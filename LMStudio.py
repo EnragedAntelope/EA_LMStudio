@@ -33,6 +33,54 @@ from .model_fetcher import (
 # Setup logging
 logger = logging.getLogger("EA_LMStudio")
 
+
+# --- Dependency log noise suppression ---
+# The lmstudio SDK and its HTTP/websocket transport emit a lot of INFO-level
+# chatter on every request (websocket lifecycle events, "HTTP Request: GET ..."
+# lines, etc.). Because ComfyUI configures the root logger at INFO, all of this
+# propagates to the console. We quiet it down to WARNING without touching
+# ComfyUI's own logging or other custom nodes.
+#
+# Two sources need handling:
+#   1. Named third-party loggers (httpx, httpcore, websockets, urllib3) -> set level.
+#   2. The lmstudio SDK, which creates loggers via new_logger(type(self).__name__),
+#      i.e. bare class-name loggers (e.g. "SyncRemoteCall") that are direct children
+#      of root. Their names are unpredictable, so we instead attach a filter to the
+#      root handlers that drops their sub-WARNING records by source file path.
+_NOISY_NAMED_LOGGERS = ("httpx", "httpcore", "websockets", "websocket", "urllib3")
+
+
+class _SuppressDependencyInfo(logging.Filter):
+    """Drop sub-WARNING log records originating from the lmstudio SDK package."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True  # always let warnings/errors through
+        path = (record.pathname or "").replace(os.sep, "/").replace("\\", "/").lower()
+        # Drop INFO/DEBUG records emitted from inside the lmstudio package.
+        return "/lmstudio/" not in path
+
+
+def _quiet_dependency_logs() -> None:
+    """Suppress noisy INFO logs from the lmstudio SDK and its HTTP/ws deps.
+
+    Idempotent: safe to call more than once (the filter is added at most once
+    per root handler).
+    """
+    for name in _NOISY_NAMED_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if not any(isinstance(f, _SuppressDependencyInfo) for f in handler.filters):
+            handler.addFilter(_SuppressDependencyInfo())
+
+
+# ComfyUI configures root logging before loading custom nodes, so its handlers
+# already exist by the time this module is imported.
+_quiet_dependency_logs()
+
+
 # Initialize configuration and model cache at module load
 _config_manager = ConfigManager()
 _config_manager.create_user_config_template()
@@ -69,6 +117,15 @@ REASONING_MODE_OPTIONS = [
     "Custom tags",
 ]
 
+# enable_thinking toggle options. "Model default" leaves the model's own
+# behavior untouched (nothing is sent); the other two force thinking on/off
+# for hybrid reasoning models (e.g. Qwen3) via the SDK's enableThinking flag.
+ENABLE_THINKING_OPTIONS = [
+    "Model default",
+    "Enabled",
+    "Disabled",
+]
+
 # Common reasoning tag patterns used by different models
 # Order matters - most common first for efficiency
 COMMON_REASONING_PATTERNS = [
@@ -85,6 +142,32 @@ COMMON_REASONING_PATTERNS = [
 # GPT-OSS uses a channel-based format: analysis channel for reasoning, final channel for response
 GPT_OSS_ANALYSIS_PATTERN = r"<\|channel\|>analysis<\|message\|>(.*?)<\|end\|>"
 GPT_OSS_FINAL_PATTERN = r"<\|channel\|>final<\|message\|>(.*?)$"
+
+# Plain-text headings that some models (often community finetunes/merges) emit when
+# they "think" without wrapping it in tags. We only use these to DETECT likely leaked
+# thinking for a better troubleshooting hint -- we never strip them from the response.
+LEAKED_THINKING_MARKERS = (
+    "thinking process",
+    "thought process",
+    "reasoning process",
+    "let me think",
+    "let's think",
+    "step 1:",
+    "step 1.",
+)
+
+
+def _looks_like_leaked_thinking(text: str) -> bool:
+    """Heuristically detect tagless reasoning that leaked into the response.
+
+    Checks only the start of the response (first ~200 chars) so that a marker
+    appearing mid-answer in a legitimate reply doesn't trigger a false positive.
+    Detection only -- callers must not strip anything based on this.
+    """
+    if not text:
+        return False
+    head = text[:200].lower()
+    return any(marker in head for marker in LEAKED_THINKING_MARKERS)
 
 
 class EALMStudio:
@@ -134,14 +217,14 @@ class EALMStudio:
                     "min": 1,
                     "max": 131072,
                     "step": 1,
-                    "tooltip": "Maximum OUTPUT tokens for the response. This limits reply length, not input. The model's context window (input+output) is set in LM Studio when loading. Context must exceed max_tokens for full output."
+                    "tooltip": "Maximum OUTPUT tokens for the response (default 1024). Limits reply length, not input. Raise for longer replies; lower to cap length/speed up. The model's context window (input+output) is set in LM Studio when loading and must exceed max_tokens for full output."
                 }),
                 "temperature": ("FLOAT", {
                     "default": 0.7,
                     "min": 0.0,
                     "max": 2.0,
                     "step": 0.05,
-                    "tooltip": "Controls randomness. Lower (0.1-0.3) = focused/deterministic. Higher (0.7-1.0) = creative/varied."
+                    "tooltip": "Controls randomness (default 0.7). Lower (0.1-0.3) = more focused/deterministic; higher (0.7-1.2) = more creative/varied. 0.0 = greedy/most deterministic."
                 }),
                 "seed": ("INT", {
                     "default": 0,
@@ -183,21 +266,39 @@ class EALMStudio:
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.05,
-                    "tooltip": "Nucleus sampling: only consider tokens with cumulative probability >= top_p. Lower = more focused. 1.0 = disabled."
+                    "tooltip": "Nucleus sampling: only consider tokens within cumulative probability top_p (default 1.0 = disabled). Lowering (e.g. 0.9-0.95) = more focused/coherent; raising toward 1.0 = more diverse."
                 }),
                 "top_k": ("INT", {
                     "default": 0,
                     "min": 0,
                     "max": 500,
                     "step": 1,
-                    "tooltip": "Top-K sampling: only consider the K most likely tokens. Lower = more focused. 0 = disabled. Recommended: 20-40 for thinking models."
+                    "tooltip": "Top-K sampling: only consider the K most likely tokens (default 0 = disabled). Lowering (e.g. 20-40) = more focused; raising = more diverse. Recommended 20-40 for thinking models."
                 }),
                 "repeat_penalty": ("FLOAT", {
                     "default": 1.0,
                     "min": 0.0,
                     "max": 2.0,
                     "step": 0.05,
-                    "tooltip": "Penalizes repeated tokens. Higher values (1.1-1.3) reduce repetition. 1.0 = disabled."
+                    "tooltip": "Penalizes tokens that already appeared, scaled by how often (default 1.0 = disabled). Raising (1.1-1.3) reduces repetition/loops; too high can hurt coherence. Below 1.0 encourages repetition."
+                }),
+                "min_p": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.01,
+                    "tooltip": "Min-P sampling: drop tokens below this fraction of the top token's probability (default 0.0 = disabled). Raising (e.g. 0.05-0.1) = more focused/coherent; lowering toward 0 = more diverse. A modern alternative to top_p."
+                }),
+                "presence_penalty": ("FLOAT", {
+                    "default": 0.0,
+                    "min": -2.0,
+                    "max": 2.0,
+                    "step": 0.05,
+                    "tooltip": "Flat penalty on any token already used, encouraging new topics (default 0.0 = disabled). Raising (e.g. 0.3-0.8) reduces repetition / broadens topics; negative values encourage reuse. Distinct from repeat_penalty. Note: LM Studio has no frequency_penalty."
+                }),
+                "enable_thinking": (ENABLE_THINKING_OPTIONS, {
+                    "default": "Model default",
+                    "tooltip": "Force thinking/reasoning on hybrid models like Qwen3 without the '/think' prompt hack (default 'Model default' = leave the model's own behavior untouched). 'Enabled' turns thinking on; 'Disabled' turns it off. Pairs with reasoning_mode. Ignored by models/backends that don't support it."
                 }),
                 # --- Reasoning extraction ---
                 "reasoning_mode": (REASONING_MODE_OPTIONS, {
@@ -443,6 +544,9 @@ class EALMStudio:
         top_p: float = 1.0,
         top_k: int = 0,
         repeat_penalty: float = 1.0,
+        min_p: float = 0.0,
+        presence_penalty: float = 0.0,
+        enable_thinking: str = "Model default",
         reasoning_mode: str = "Auto-detect (recommended)",
         custom_open_tag: str = "<think>",
         custom_close_tag: str = "</think>",
@@ -580,21 +684,32 @@ class EALMStudio:
                     "contextOverflowPolicy": "truncateMiddle",
                 }
 
-                # Add optional parameters if not at default
-                # Note: Parameter names per LM Studio SDK docs
+                # Add optional parameters only when set away from their disabled
+                # default, so default workflows send nothing extra (and stay safe
+                # on older LM Studio backends, which silently ignore params they
+                # don't support rather than erroring).
+                # Key names validated against LM Studio 0.4.17 / LLMPredictionConfigInput.
                 if top_p < 1.0:
                     gen_config["topPSampling"] = top_p
                 if top_k > 0:
                     gen_config["topKSampling"] = top_k
                 if repeat_penalty != 1.0:
                     gen_config["repeatPenalty"] = repeat_penalty
+                if min_p > 0.0:
+                    gen_config["minPSampling"] = min_p
+                if presence_penalty != 0.0:
+                    gen_config["presencePenalty"] = presence_penalty
+                if enable_thinking != "Model default":
+                    gen_config["enableThinking"] = (enable_thinking == "Enabled")
                 # Note: seed is not a valid inference-time parameter in LM Studio SDK
                 if draft_model:
                     gen_config["draftModel"] = draft_model
 
-                troubleshooting_lines.append(f"[INFO] Config: maxTokens={max_tokens}, temp={temperature}")
-                if top_k > 0:
-                    troubleshooting_lines.append(f"[INFO] Sampling: top_k={top_k}, top_p={top_p}")
+                # Show every parameter actually being sent, so the user can confirm
+                # exactly what is applied. Params left at their disabled default are
+                # omitted above and therefore won't appear here.
+                config_summary = ", ".join(f"{k}={v}" for k, v in gen_config.items())
+                troubleshooting_lines.append(f"[INFO] Config: {config_summary}")
                 troubleshooting_lines.append("[INFO] Generating...")
 
                 start_time = time.time()
@@ -629,6 +744,15 @@ class EALMStudio:
                     final_response, reasoning, detected_pattern = self._extract_reasoning_auto(response_text)
                     if detected_pattern:
                         troubleshooting_lines.append(f"[INFO] Auto-detected reasoning format: {detected_pattern}")
+                    elif _looks_like_leaked_thinking(response_text):
+                        # The model thought, but in a tagless plain-text format that
+                        # neither LM Studio's parser nor our tag-based extractor caught,
+                        # so the reasoning leaked into the response output.
+                        troubleshooting_lines.append("[WARNING] Output looks like tagless thinking that leaked into the response (no <think>-style tags found)")
+                        if enable_thinking == "Disabled":
+                            troubleshooting_lines.append("[HINT] This model kept thinking despite enable_thinking=Disabled - its chat template likely ignores the enableThinking flag (common for community merges/finetunes)")
+                        troubleshooting_lines.append("[HINT] To fix in LM Studio: set this model's Reasoning Parsing delimiters, or edit its Jinja template to hard-disable thinking ({%- set enable_thinking = false %})")
+                        troubleshooting_lines.append("[HINT] Or, if the model uses a consistent marker, switch reasoning_mode to 'Custom tags' and set the open/close tags")
                     else:
                         troubleshooting_lines.append("[INFO] No reasoning tags detected (model may not have used thinking for this query)")
                 elif reasoning_mode == "Custom tags":
