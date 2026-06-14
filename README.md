@@ -50,6 +50,7 @@ pip install -r EA_LMStudio/requirements.txt
 - **Context errors?** Increase context length in LM Studio settings (not max_tokens).
 - **VLM issues?** Try a smaller image resize option or single image if multi-image fails.
 - **Force thinking mode:** Set the `enable_thinking` toggle to `Enabled` for hybrid models like Qwen3 (no prompt hacks needed), or add `/think` to prompts / "Think step by step" for others.
+- **`enable_thinking` not working?** The toggle sets the `enableThinking` flag, which only takes effect when the model's chat template honors the `enable_thinking` Jinja variable. Many community finetunes/merges (and models that emit a tagless `Thinking Process:` preamble instead of `<think>` tags) ignore it and keep thinking regardless. To actually disable or cleanly separate thinking for those, fix it in LM Studio: either edit the model's Jinja template (`{%- set enable_thinking = false %}`) or configure its **Reasoning Parsing** delimiters so LM Studio knows how to split reasoning from the answer.
 - **Reducing repetition:** Raise `repeat_penalty` (1.1-1.3) and/or `presence_penalty` (0.3-0.8). These are distinct controls; LM Studio has no separate frequency penalty. `min_p` (0.05-0.1) is a modern alternative to `top_p` for keeping output coherent.
 
 ## Custom Server

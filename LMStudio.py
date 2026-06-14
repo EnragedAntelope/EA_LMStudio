@@ -143,6 +143,32 @@ COMMON_REASONING_PATTERNS = [
 GPT_OSS_ANALYSIS_PATTERN = r"<\|channel\|>analysis<\|message\|>(.*?)<\|end\|>"
 GPT_OSS_FINAL_PATTERN = r"<\|channel\|>final<\|message\|>(.*?)$"
 
+# Plain-text headings that some models (often community finetunes/merges) emit when
+# they "think" without wrapping it in tags. We only use these to DETECT likely leaked
+# thinking for a better troubleshooting hint -- we never strip them from the response.
+LEAKED_THINKING_MARKERS = (
+    "thinking process",
+    "thought process",
+    "reasoning process",
+    "let me think",
+    "let's think",
+    "step 1:",
+    "step 1.",
+)
+
+
+def _looks_like_leaked_thinking(text: str) -> bool:
+    """Heuristically detect tagless reasoning that leaked into the response.
+
+    Checks only the start of the response (first ~200 chars) so that a marker
+    appearing mid-answer in a legitimate reply doesn't trigger a false positive.
+    Detection only -- callers must not strip anything based on this.
+    """
+    if not text:
+        return False
+    head = text[:200].lower()
+    return any(marker in head for marker in LEAKED_THINKING_MARKERS)
+
 
 class EALMStudio:
     """
@@ -718,6 +744,15 @@ class EALMStudio:
                     final_response, reasoning, detected_pattern = self._extract_reasoning_auto(response_text)
                     if detected_pattern:
                         troubleshooting_lines.append(f"[INFO] Auto-detected reasoning format: {detected_pattern}")
+                    elif _looks_like_leaked_thinking(response_text):
+                        # The model thought, but in a tagless plain-text format that
+                        # neither LM Studio's parser nor our tag-based extractor caught,
+                        # so the reasoning leaked into the response output.
+                        troubleshooting_lines.append("[WARNING] Output looks like tagless thinking that leaked into the response (no <think>-style tags found)")
+                        if enable_thinking == "Disabled":
+                            troubleshooting_lines.append("[HINT] This model kept thinking despite enable_thinking=Disabled - its chat template likely ignores the enableThinking flag (common for community merges/finetunes)")
+                        troubleshooting_lines.append("[HINT] To fix in LM Studio: set this model's Reasoning Parsing delimiters, or edit its Jinja template to hard-disable thinking ({%- set enable_thinking = false %})")
+                        troubleshooting_lines.append("[HINT] Or, if the model uses a consistent marker, switch reasoning_mode to 'Custom tags' and set the open/close tags")
                     else:
                         troubleshooting_lines.append("[INFO] No reasoning tags detected (model may not have used thinking for this query)")
                 elif reasoning_mode == "Custom tags":
