@@ -1,6 +1,6 @@
 # EA_LMStudio
 
- [LM Studio](https://lmstudio.ai/) ComfyUI node integration with easy model selection and many optimizations! 
+ The most fully-featured [LM Studio](https://lmstudio.ai/) integration for ComfyUI — auto model discovery, multi-image vision, reasoning extraction, full sampler control, and built-in VRAM management. 
 
  <img width="1818" height="1285" alt="image" src="https://github.com/user-attachments/assets/2f7529c3-1be8-49e3-935f-db610129d990" />
  _Example of using as a Text-only LLM, with automated reasoning extraction_
@@ -15,7 +15,7 @@
 - **Auto Model Discovery** - Models populate automatically from LM Studio at startup
 - **Vision Support** - Up to 4 image inputs with smart auto-resize to prevent OOM
 - **Reasoning Extraction** - Separates thinking from final response (DeepSeek R1, Qwen3, QwQ, etc.)
-- **Advanced Controls** - Temperature, top-k/p, repetition penalty, speculative decoding
+- **Advanced Controls** - Temperature, top-k/p, min-p, repetition & presence penalties, thinking toggle, speculative decoding
 - **Smart Troubleshooting** - Helpful error messages with specific hints
 - **Detailed Stats** - Tokens/sec, time to first token, stop reason, and token counts in troubleshooting output
 - **VRAM Management** - Auto-unload after generation (enabled by default)
@@ -31,6 +31,13 @@ git clone https://github.com/EnragedAntelope/EA_LMStudio.git
 pip install -r EA_LMStudio/requirements.txt
 ```
 
+## Requirements
+
+- **LM Studio** with the local server enabled. Validated against **LM Studio 0.4.17**.
+- The **`lmstudio`** Python package (installed via `requirements.txt`).
+
+> **Keep LM Studio and the `lmstudio` package updated.** Newer sampling controls (e.g. min-p, presence penalty, thinking toggle) are applied by the backend only when it supports them — older backends silently ignore parameters they don't recognize rather than erroring, so updating ensures every setting actually takes effect.
+
 ## Quick Start
 
 1. Start LM Studio with server enabled (default: `http://127.0.0.1:1234`)
@@ -42,7 +49,8 @@ pip install -r EA_LMStudio/requirements.txt
 - **Models not showing?** LM Studio must be running before ComfyUI starts. Toggle the `refresh_models` checkbox to instantly re-fetch and update the dropdowns.
 - **Context errors?** Increase context length in LM Studio settings (not max_tokens).
 - **VLM issues?** Try a smaller image resize option or single image if multi-image fails.
-- **Force thinking mode:** Add `/think` to prompts for Qwen3, or "Think step by step" for others.
+- **Force thinking mode:** Set the `enable_thinking` toggle to `Enabled` for hybrid models like Qwen3 (no prompt hacks needed), or add `/think` to prompts / "Think step by step" for others.
+- **Reducing repetition:** Raise `repeat_penalty` (1.1-1.3) and/or `presence_penalty` (0.3-0.8). These are distinct controls; LM Studio has no separate frequency penalty. `min_p` (0.05-0.1) is a modern alternative to `top_p` for keeping output coherent.
 
 ## Custom Server
 
