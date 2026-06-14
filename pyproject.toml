@@ -1,7 +1,7 @@
 [project]
 name = "EA_LMStudio"
 description = "Fully-featured LM Studio integration for ComfyUI: model discovery, vision, reasoning extraction, and full sampler control."
-version = "1.4.0"
+version = "1.4.1"
 license = {file = "LICENSE"}
 
 [project.urls]
