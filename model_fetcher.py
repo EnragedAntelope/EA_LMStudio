@@ -5,7 +5,7 @@ Queries LM Studio server for available models via /v1/models endpoint.
 import re
 import requests
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 logger = logging.getLogger("EA_LMStudio")
@@ -19,13 +19,14 @@ _last_fetch_success: bool = False
 CUSTOM_MODEL_OPTION = "-- Custom (enter below) --"
 
 
-def validate_model_identifier(model_id: str) -> bool:
+def validate_model_identifier(model_id: str) -> Tuple[bool, Optional[str]]:
     """
     Validate model identifier for safety.
 
     Args:
         model_id: The model identifier string to validate.
 
+    Returns:
         Tuple of (is_valid, error_message)
         - is_valid: True if valid, False otherwise
         - error_message: None if valid, descriptive error if invalid
@@ -53,11 +54,15 @@ def validate_model_identifier(model_id: str) -> bool:
 
 
 def _is_excluded(model_id: str, excluded_patterns: List[str]) -> bool:
-    """Check if a model should be excluded based on configured patterns."""
+    """Check if a model should be excluded based on configured patterns.
+
+    Matching is case-insensitive on both sides, so config patterns like
+    "Qwen3-Coder" work as documented.
+    """
     if not excluded_patterns or not model_id:
         return False
     model_id_lower = model_id.lower()
-    return any(pattern in model_id_lower for pattern in excluded_patterns)
+    return any(pattern.lower() in model_id_lower for pattern in excluded_patterns)
 
 
 def fetch_models_from_server(
@@ -89,7 +94,11 @@ def fetch_models_from_server(
     endpoint = f"{server_url.rstrip('/')}/v1/models"
 
     try:
-        response = requests.get(endpoint, timeout=timeout)
+        # (connect, read) timeout tuple: cap the connect phase so an
+        # unreachable-but-not-refusing host (firewalled/asleep machine) can't
+        # block ComfyUI startup for the full configured read timeout.
+        connect_timeout = min(timeout, 3.05)
+        response = requests.get(endpoint, timeout=(connect_timeout, timeout))
         response.raise_for_status()
 
         data = response.json()

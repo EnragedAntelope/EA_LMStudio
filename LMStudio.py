@@ -86,11 +86,13 @@ _config_manager = ConfigManager()
 _config_manager.create_user_config_template()
 _config_manager.ensure_default_config_exists()
 
-# Attempt to fetch models at startup
-_startup_server_url = _config_manager.get_server_url()
-_startup_timeout = _config_manager.get_timeout()
-_startup_excluded_patterns = _config_manager.get_excluded_patterns()
-initialize_model_cache(_startup_server_url, _startup_timeout, excluded_patterns=_startup_excluded_patterns)
+# Attempt to fetch models at startup (single config read)
+_startup_config = _config_manager.get_config()
+initialize_model_cache(
+    _config_manager.get_server_url(_startup_config),
+    _config_manager.get_timeout(_startup_config),
+    excluded_patterns=_config_manager.get_excluded_patterns(_startup_config),
+)
 
 # Image resize options
 IMAGE_RESIZE_OPTIONS = [
@@ -128,20 +130,48 @@ ENABLE_THINKING_OPTIONS = [
 
 # Common reasoning tag patterns used by different models
 # Order matters - most common first for efficiency
+# Precompiled once at import; these run on every generation.
 COMMON_REASONING_PATTERNS = [
     # DeepSeek R1, Qwen3, QwQ, GLM-4/Z1 - most common
-    (r"<think>(.*?)</think>", "<think>", "</think>"),
+    (re.compile(r"<think>(.*?)</think>", re.DOTALL), "<think>", "</think>"),
     # Alternative spelling
-    (r"<thinking>(.*?)</thinking>", "<thinking>", "</thinking>"),
+    (re.compile(r"<thinking>(.*?)</thinking>", re.DOTALL), "<thinking>", "</thinking>"),
     # Some models use this
-    (r"<reasoning>(.*?)</reasoning>", "<reasoning>", "</reasoning>"),
+    (re.compile(r"<reasoning>(.*?)</reasoning>", re.DOTALL), "<reasoning>", "</reasoning>"),
     # Occasionally seen
-    (r"<reason>(.*?)</reason>", "<reason>", "</reason>"),
+    (re.compile(r"<reason>(.*?)</reason>", re.DOTALL), "<reason>", "</reason>"),
 ]
 
-# GPT-OSS uses a channel-based format: analysis channel for reasoning, final channel for response
-GPT_OSS_ANALYSIS_PATTERN = r"<\|channel\|>analysis<\|message\|>(.*?)<\|end\|>"
-GPT_OSS_FINAL_PATTERN = r"<\|channel\|>final<\|message\|>(.*?)$"
+# GPT-OSS models use OpenAI's "harmony" channel format:
+#   <|start|>assistant<|channel|>analysis<|message|>...<|end|>
+#   <|start|>assistant<|channel|>final<|message|>...<|return|>
+# LM Studio usually parses this itself, but partial leaks are common: a final
+# block with its markers still attached, an analysis block missing its <|end|>
+# terminator, a trailing <|return|>, or (when special tokens get stripped
+# during detokenization) a bare "analysis...assistantfinal..." string.
+#
+# Analysis/commentary segments end at <|end|> or at the start of the next
+# message/channel header, or at end of text if truncated. The commentary
+# channel carries preambles/tool chatter, so it is routed to reasoning too.
+GPT_OSS_ANALYSIS_RE = re.compile(
+    r"<\|channel\|>(?:analysis|commentary)<\|message\|>(.*?)"
+    r"(?=<\|end\|>|<\|start\|>|<\|channel\|>|\Z)",
+    re.DOTALL,
+)
+GPT_OSS_FINAL_RE = re.compile(r"<\|channel\|>final<\|message\|>(.*)\Z", re.DOTALL)
+# Sweep for any harmony markers left over after extraction. <|...|> tokens
+# never appear in legitimate prose, so removing them is safe.
+HARMONY_MARKER_RE = re.compile(
+    r"<\|start\|>(?:assistant|user|system|tool)?"
+    r"|<\|channel\|>(?:analysis|commentary|final)?"
+    r"|<\|message\|>|<\|end\|>|<\|return\|>|<\|constrain\|>"
+)
+# Detokenized-without-special-tokens variant: "analysisUser wants...assistantfinalAnswer".
+# "assistantfinal" is the discriminator; it never occurs in normal prose.
+GPT_OSS_STRIPPED_RE = re.compile(r"\s*analysis(.*?)assistantfinal(.*)\Z", re.DOTALL)
+
+# Quick membership test for whether harmony markers are present at all
+_HARMONY_TOKENS = ("<|channel|>", "<|message|>", "<|start|>", "<|end|>", "<|return|>")
 
 # Plain-text headings that some models (often community finetunes/merges) emit when
 # they "think" without wrapping it in tags. We only use these to DETECT likely leaked
@@ -330,10 +360,15 @@ class EALMStudio:
         }
 
     @classmethod
-    def IS_CHANGED(cls, **kwargs) -> str:
-        """Force re-execution when refresh_models is True."""
+    def IS_CHANGED(cls, **kwargs):
+        """Force re-execution when refresh_models is True.
+
+        Returns float("nan") (not its string form): NaN != NaN, so ComfyUI
+        sees a changed value every run. As a string, "nan" == "nan" and the
+        cached result would be reused.
+        """
         if kwargs.get("refresh_models", False):
-            return str(float("nan"))  # Always different
+            return float("nan")  # Always different
         return ""
 
     def _resolve_model_identifier(
@@ -415,8 +450,10 @@ class EALMStudio:
             else:
                 img_array = image_tensor.cpu().numpy()
 
-            # Convert to uint8
-            img_array = (img_array * 255).astype(np.uint8)
+            # Convert to uint8. Clip first: ComfyUI tensors can slightly
+            # exceed [0, 1] (VAE decode etc.), and out-of-range values would
+            # otherwise wrap around during the uint8 cast (1.02 -> 4).
+            img_array = np.clip(img_array * 255.0, 0, 255).astype(np.uint8)
 
             # Create PIL Image
             pil_image = Image.fromarray(img_array)
@@ -432,6 +469,56 @@ class EALMStudio:
             logger.error(f"Failed to convert image: {e}")
             return None
 
+    def _extract_reasoning_gpt_oss(self, text: str) -> Optional[Tuple[str, str, str]]:
+        """
+        Extract reasoning from GPT-OSS "harmony" channel output, including
+        partial leaks where only some markers survived LM Studio's own parsing.
+
+        Args:
+            text: Full response text
+
+        Returns:
+            Tuple of (response, reasoning, detected_pattern), or None if the
+            text contains no harmony markers at all.
+        """
+        if any(token in text for token in _HARMONY_TOKENS):
+            reasoning_parts = [m.group(1).strip() for m in GPT_OSS_ANALYSIS_RE.finditer(text)]
+            reasoning_parts = [p for p in reasoning_parts if p]
+            final_match = GPT_OSS_FINAL_RE.search(text)
+
+            if final_match:
+                response = final_match.group(1)
+            else:
+                response = GPT_OSS_ANALYSIS_RE.sub("", text)
+
+            # Only stray terminators present (e.g. a bare <|end|> with no
+            # channel headers): treat text before the terminator as leaked
+            # reasoning, mirroring the missing-open-tag fallback below.
+            if not reasoning_parts and not final_match and "<|channel|>" not in text:
+                before, sep, after = text.partition("<|end|>")
+                if sep and before.strip() and after.strip():
+                    return (
+                        HARMONY_MARKER_RE.sub("", after).strip(),
+                        before.strip(),
+                        "<|end|> (stray terminator)",
+                    )
+
+            # Sweep any remaining markers (<|return|>, <|start|>assistant, ...)
+            response = HARMONY_MARKER_RE.sub("", response).strip()
+            return response, "\n---\n".join(reasoning_parts), "<|channel|> (GPT-OSS harmony)"
+
+        # Detokenized variant with special tokens stripped:
+        # "analysisUser wants a cat pic.assistantfinalHere is a cat."
+        stripped_match = GPT_OSS_STRIPPED_RE.match(text)
+        if stripped_match:
+            return (
+                stripped_match.group(2).strip(),
+                stripped_match.group(1).strip(),
+                "analysis...assistantfinal (stripped special tokens)",
+            )
+
+        return None
+
     def _extract_reasoning_auto(self, text: str) -> Tuple[str, str, Optional[str]]:
         """
         Auto-detect and extract reasoning using common patterns.
@@ -443,33 +530,18 @@ class EALMStudio:
             Tuple of (response_without_reasoning, reasoning_content, detected_pattern)
             detected_pattern is None if no pattern matched
         """
-        # Check for GPT-OSS channel-based format first
-        # Format: <|channel|>analysis<|message|>...<|end|>...<|channel|>final<|message|>...
-        analysis_match = re.search(GPT_OSS_ANALYSIS_PATTERN, text, re.DOTALL)
-        if analysis_match:
-            reasoning = analysis_match.group(1).strip()
-            # Try to extract the final response
-            final_match = re.search(GPT_OSS_FINAL_PATTERN, text, re.DOTALL)
-            if final_match:
-                response = final_match.group(1).strip()
-            else:
-                # Fallback: remove analysis section and any remaining markers
-                response = re.sub(GPT_OSS_ANALYSIS_PATTERN, "", text, flags=re.DOTALL)
-                # Clean up any remaining channel markers
-                response = re.sub(r"<\|start\|>assistant", "", response)
-                response = re.sub(r"<\|channel\|>final<\|message\|>", "", response)
-                response = re.sub(r"<\|end\|>", "", response)
-                response = response.strip()
-            return response, reasoning, "<|channel|>analysis"
+        # Check for GPT-OSS harmony/channel-based format first
+        gpt_oss_result = self._extract_reasoning_gpt_oss(text)
+        if gpt_oss_result is not None:
+            return gpt_oss_result
 
         # Check standard tag-based patterns
         for pattern, open_tag, close_tag in COMMON_REASONING_PATTERNS:
-            # Use DOTALL to match across newlines
-            matches = list(re.finditer(pattern, text, re.DOTALL))
+            matches = list(pattern.finditer(text))
             if matches:
                 reasoning_parts = [m.group(1) for m in matches]
                 # Remove all matched reasoning blocks from text
-                clean_text = re.sub(pattern, "", text, flags=re.DOTALL)
+                clean_text = pattern.sub("", text)
                 return clean_text.strip(), "\n---\n".join(reasoning_parts).strip(), open_tag
 
         # Fallback: Check for closing tag without opening tag (model bug/edge case)
@@ -483,6 +555,12 @@ class EALMStudio:
                     response = parts[1].strip()
                     if reasoning and response:
                         return response, reasoning, f"{close_tag} (missing open tag)"
+                    if reasoning and not response:
+                        # Model spent its whole budget thinking and never
+                        # produced an answer (usually maxTokens truncation).
+                        # Surface it as reasoning rather than passing the raw
+                        # tagged text through as the response.
+                        return "", reasoning, f"{close_tag} (missing open tag, response truncated)"
 
         # No pattern matched
         return text, "", None
@@ -562,11 +640,11 @@ class EALMStudio:
         """
         troubleshooting_lines = []
 
-        # Get current config
+        # Get current config (read the file once and derive everything from it)
         config = _config_manager.get_config()
-        server_url = _config_manager.get_server_url()
-        timeout = _config_manager.get_timeout()
-        excluded_patterns = config.get("excluded_model_patterns", [])
+        server_url = _config_manager.get_server_url(config)
+        timeout = _config_manager.get_timeout(config)
+        excluded_patterns = _config_manager.get_excluded_patterns(config)
 
         troubleshooting_lines.append(f"[INFO] Server: {server_url}")
         troubleshooting_lines.append(f"[INFO] Cached models: {get_cached_model_count()}")
@@ -621,6 +699,10 @@ class EALMStudio:
 
         for idx, img_tensor in enumerate(image_inputs, start=1):
             if img_tensor is not None:
+                if len(img_tensor.shape) == 4 and img_tensor.shape[0] > 1:
+                    troubleshooting_lines.append(
+                        f"[WARNING] Image {idx}: batch of {img_tensor.shape[0]} received; only the first image is used"
+                    )
                 pil_img = self._convert_image_to_pil(img_tensor, image_resize)
                 if pil_img:
                     pil_images.append(pil_img)
