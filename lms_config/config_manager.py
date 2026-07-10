@@ -5,7 +5,7 @@ Handles server settings with gitignore-protected user config.
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 
 logger = logging.getLogger("EA_LMStudio")
@@ -52,30 +52,44 @@ class ConfigManager:
 
         return config
 
-    def get_server_url(self) -> str:
+    def get_server_url(self, config: Optional[Dict[str, Any]] = None) -> str:
         """
         Get the full server base URL for API calls.
+
+        Args:
+            config: Optional pre-loaded config dict (from get_config()) to
+                avoid re-reading the config file. Loaded fresh if omitted.
 
         Returns:
             URL string like "http://127.0.0.1:1234"
         """
-        config = self.get_config()
+        if config is None:
+            config = self.get_config()
         host = config.get("server_host", "127.0.0.1")
         port = config.get("server_port", 1234)
         return f"http://{host}:{port}"
 
-    def get_timeout(self) -> float:
-        """Get configured timeout in seconds."""
-        config = self.get_config()
+    def get_timeout(self, config: Optional[Dict[str, Any]] = None) -> float:
+        """Get configured timeout in seconds.
+
+        Args:
+            config: Optional pre-loaded config dict to avoid a re-read.
+        """
+        if config is None:
+            config = self.get_config()
         return float(config.get("timeout_seconds", 5))
 
-    def get_excluded_patterns(self) -> List[str]:
+    def get_excluded_patterns(self, config: Optional[Dict[str, Any]] = None) -> List[str]:
         """Get model exclusion patterns from config.
+
+        Args:
+            config: Optional pre-loaded config dict to avoid a re-read.
 
         Returns a merged list: default patterns + user-specified additions.
         The "embedding" pattern is always included and cannot be removed.
         """
-        config = self.get_config()
+        if config is None:
+            config = self.get_config()
         val = config.get("excluded_model_patterns")
 
         # Start with defaults

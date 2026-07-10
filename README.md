@@ -14,7 +14,7 @@
 
 - **Auto Model Discovery** - Models populate automatically from LM Studio at startup
 - **Vision Support** - Up to 4 image inputs with smart auto-resize to prevent OOM
-- **Reasoning Extraction** - Separates thinking from final response (DeepSeek R1, Qwen3, QwQ, etc.)
+- **Reasoning Extraction** - Separates thinking from final response (DeepSeek R1, Qwen3, QwQ, GLM, etc.), including GPT-OSS "harmony" channel output — leaked `<|channel|>` / `<|message|>` / `<|end|>` / `<|return|>` markers are extracted and cleaned automatically, even when only partial markers survive
 - **Advanced Controls** - Temperature, top-k/p, min-p, repetition & presence penalties, thinking toggle, speculative decoding
 - **Smart Troubleshooting** - Helpful error messages with specific hints
 - **Detailed Stats** - Tokens/sec, time to first token, stop reason, and token counts in troubleshooting output
