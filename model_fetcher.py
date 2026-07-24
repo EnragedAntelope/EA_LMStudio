@@ -138,7 +138,10 @@ def fetch_models_from_server(
     except requests.exceptions.HTTPError as e:
         error = f"LM Studio returned HTTP error: {e.response.status_code}"
         logger.warning(f"EA_LMStudio: {error}")
-    except requests.exceptions.JSONDecodeError:
+    except (requests.exceptions.JSONDecodeError, ValueError):
+        # requests.exceptions.JSONDecodeError exists only on requests >= 2.27
+        # (which requirements.txt now pins); ValueError is its base class and a
+        # belt-and-suspenders catch for the JSON error older stacks may raise.
         error = "Invalid JSON response from LM Studio"
         logger.warning(f"EA_LMStudio: {error}")
     except Exception as e:

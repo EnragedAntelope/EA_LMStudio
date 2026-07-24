@@ -3,12 +3,10 @@ EA LM Studio Node - ComfyUI integration for LM Studio
 Provides text generation using local LLM/VLM models via LM Studio server.
 """
 import logging
-import re
 from typing import Optional, Tuple, List
 import os
 import time
 from tempfile import NamedTemporaryFile
-import numpy as np
 from PIL import Image
 
 # LM Studio SDK
@@ -29,6 +27,12 @@ from .model_fetcher import (
     get_cached_model_count,
     CUSTOM_MODEL_OPTION,
 )
+from .lms_reasoning import (
+    extract_reasoning_auto,
+    extract_reasoning_custom,
+    looks_like_leaked_thinking,
+)
+from .lms_image import convert_image_to_pil
 
 # Setup logging
 logger = logging.getLogger("EA_LMStudio")
@@ -128,76 +132,9 @@ ENABLE_THINKING_OPTIONS = [
     "Disabled",
 ]
 
-# Common reasoning tag patterns used by different models
-# Order matters - most common first for efficiency
-# Precompiled once at import; these run on every generation.
-COMMON_REASONING_PATTERNS = [
-    # DeepSeek R1, Qwen3, QwQ, GLM-4/Z1 - most common
-    (re.compile(r"<think>(.*?)</think>", re.DOTALL), "<think>", "</think>"),
-    # Alternative spelling
-    (re.compile(r"<thinking>(.*?)</thinking>", re.DOTALL), "<thinking>", "</thinking>"),
-    # Some models use this
-    (re.compile(r"<reasoning>(.*?)</reasoning>", re.DOTALL), "<reasoning>", "</reasoning>"),
-    # Occasionally seen
-    (re.compile(r"<reason>(.*?)</reason>", re.DOTALL), "<reason>", "</reason>"),
-]
-
-# GPT-OSS models use OpenAI's "harmony" channel format:
-#   <|start|>assistant<|channel|>analysis<|message|>...<|end|>
-#   <|start|>assistant<|channel|>final<|message|>...<|return|>
-# LM Studio usually parses this itself, but partial leaks are common: a final
-# block with its markers still attached, an analysis block missing its <|end|>
-# terminator, a trailing <|return|>, or (when special tokens get stripped
-# during detokenization) a bare "analysis...assistantfinal..." string.
-#
-# Analysis/commentary segments end at <|end|> or at the start of the next
-# message/channel header, or at end of text if truncated. The commentary
-# channel carries preambles/tool chatter, so it is routed to reasoning too.
-GPT_OSS_ANALYSIS_RE = re.compile(
-    r"<\|channel\|>(?:analysis|commentary)<\|message\|>(.*?)"
-    r"(?=<\|end\|>|<\|start\|>|<\|channel\|>|\Z)",
-    re.DOTALL,
-)
-GPT_OSS_FINAL_RE = re.compile(r"<\|channel\|>final<\|message\|>(.*)\Z", re.DOTALL)
-# Sweep for any harmony markers left over after extraction. <|...|> tokens
-# never appear in legitimate prose, so removing them is safe.
-HARMONY_MARKER_RE = re.compile(
-    r"<\|start\|>(?:assistant|user|system|tool)?"
-    r"|<\|channel\|>(?:analysis|commentary|final)?"
-    r"|<\|message\|>|<\|end\|>|<\|return\|>|<\|constrain\|>"
-)
-# Detokenized-without-special-tokens variant: "analysisUser wants...assistantfinalAnswer".
-# "assistantfinal" is the discriminator; it never occurs in normal prose.
-GPT_OSS_STRIPPED_RE = re.compile(r"\s*analysis(.*?)assistantfinal(.*)\Z", re.DOTALL)
-
-# Quick membership test for whether harmony markers are present at all
-_HARMONY_TOKENS = ("<|channel|>", "<|message|>", "<|start|>", "<|end|>", "<|return|>")
-
-# Plain-text headings that some models (often community finetunes/merges) emit when
-# they "think" without wrapping it in tags. We only use these to DETECT likely leaked
-# thinking for a better troubleshooting hint -- we never strip them from the response.
-LEAKED_THINKING_MARKERS = (
-    "thinking process",
-    "thought process",
-    "reasoning process",
-    "let me think",
-    "let's think",
-    "step 1:",
-    "step 1.",
-)
-
-
-def _looks_like_leaked_thinking(text: str) -> bool:
-    """Heuristically detect tagless reasoning that leaked into the response.
-
-    Checks only the start of the response (first ~200 chars) so that a marker
-    appearing mid-answer in a legitimate reply doesn't trigger a false positive.
-    Detection only -- callers must not strip anything based on this.
-    """
-    if not text:
-        return False
-    head = text[:200].lower()
-    return any(marker in head for marker in LEAKED_THINKING_MARKERS)
+# Reasoning/thinking extraction (regexes + helpers) lives in lms_reasoning.py
+# so the pure text-processing logic stays importable and unit-testable without
+# pulling in the lmstudio SDK, ComfyUI, or the startup network fetch.
 
 
 class EALMStudio:
@@ -399,210 +336,6 @@ class EALMStudio:
 
         return model_id, None
 
-    def _resize_image(self, pil_image: Image.Image, max_dimension: Optional[int]) -> Image.Image:
-        """
-        Resize image to fit within max_dimension while preserving aspect ratio.
-
-        Args:
-            pil_image: PIL Image to resize
-            max_dimension: Maximum size for longest edge, or None to skip resize
-
-        Returns:
-            Resized PIL Image (or original if no resize needed)
-        """
-        if max_dimension is None:
-            return pil_image
-
-        width, height = pil_image.size
-        max_current = max(width, height)
-
-        # Only resize if image is larger than target
-        if max_current <= max_dimension:
-            return pil_image
-
-        # Calculate new dimensions preserving aspect ratio
-        scale = max_dimension / max_current
-        new_width = int(width * scale)
-        new_height = int(height * scale)
-
-        # Use LANCZOS for high-quality downscaling
-        return pil_image.resize((new_width, new_height), Image.LANCZOS)
-
-    def _convert_image_to_pil(self, image_tensor, resize_option: str = "No Resize") -> Optional[Image.Image]:
-        """
-        Convert ComfyUI image tensor to PIL Image, optionally resizing.
-
-        Args:
-            image_tensor: ComfyUI image tensor
-            resize_option: Resize option from IMAGE_RESIZE_OPTIONS
-
-        Returns:
-            PIL Image or None if conversion fails
-        """
-        try:
-            # ComfyUI images are [B, H, W, C] float tensors in 0-1 range
-            if image_tensor is None:
-                return None
-
-            # Take first image if batch
-            if len(image_tensor.shape) == 4:
-                img_array = image_tensor[0].cpu().numpy()
-            else:
-                img_array = image_tensor.cpu().numpy()
-
-            # Convert to uint8. Clip first: ComfyUI tensors can slightly
-            # exceed [0, 1] (VAE decode etc.), and out-of-range values would
-            # otherwise wrap around during the uint8 cast (1.02 -> 4).
-            img_array = np.clip(img_array * 255.0, 0, 255).astype(np.uint8)
-
-            # Create PIL Image
-            pil_image = Image.fromarray(img_array)
-
-            # Apply resize if specified
-            max_dim = RESIZE_DIMENSIONS.get(resize_option)
-            if max_dim is not None:
-                pil_image = self._resize_image(pil_image, max_dim)
-
-            return pil_image
-
-        except Exception as e:
-            logger.error(f"Failed to convert image: {e}")
-            return None
-
-    def _extract_reasoning_gpt_oss(self, text: str) -> Optional[Tuple[str, str, str]]:
-        """
-        Extract reasoning from GPT-OSS "harmony" channel output, including
-        partial leaks where only some markers survived LM Studio's own parsing.
-
-        Args:
-            text: Full response text
-
-        Returns:
-            Tuple of (response, reasoning, detected_pattern), or None if the
-            text contains no harmony markers at all.
-        """
-        if any(token in text for token in _HARMONY_TOKENS):
-            reasoning_parts = [m.group(1).strip() for m in GPT_OSS_ANALYSIS_RE.finditer(text)]
-            reasoning_parts = [p for p in reasoning_parts if p]
-            final_match = GPT_OSS_FINAL_RE.search(text)
-
-            if final_match:
-                response = final_match.group(1)
-            else:
-                response = GPT_OSS_ANALYSIS_RE.sub("", text)
-
-            # Only stray terminators present (e.g. a bare <|end|> with no
-            # channel headers): treat text before the terminator as leaked
-            # reasoning, mirroring the missing-open-tag fallback below.
-            if not reasoning_parts and not final_match and "<|channel|>" not in text:
-                before, sep, after = text.partition("<|end|>")
-                if sep and before.strip() and after.strip():
-                    return (
-                        HARMONY_MARKER_RE.sub("", after).strip(),
-                        before.strip(),
-                        "<|end|> (stray terminator)",
-                    )
-
-            # Sweep any remaining markers (<|return|>, <|start|>assistant, ...)
-            response = HARMONY_MARKER_RE.sub("", response).strip()
-            return response, "\n---\n".join(reasoning_parts), "<|channel|> (GPT-OSS harmony)"
-
-        # Detokenized variant with special tokens stripped:
-        # "analysisUser wants a cat pic.assistantfinalHere is a cat."
-        stripped_match = GPT_OSS_STRIPPED_RE.match(text)
-        if stripped_match:
-            return (
-                stripped_match.group(2).strip(),
-                stripped_match.group(1).strip(),
-                "analysis...assistantfinal (stripped special tokens)",
-            )
-
-        return None
-
-    def _extract_reasoning_auto(self, text: str) -> Tuple[str, str, Optional[str]]:
-        """
-        Auto-detect and extract reasoning using common patterns.
-
-        Args:
-            text: Full response text
-
-        Returns:
-            Tuple of (response_without_reasoning, reasoning_content, detected_pattern)
-            detected_pattern is None if no pattern matched
-        """
-        # Check for GPT-OSS harmony/channel-based format first
-        gpt_oss_result = self._extract_reasoning_gpt_oss(text)
-        if gpt_oss_result is not None:
-            return gpt_oss_result
-
-        # Check standard tag-based patterns
-        for pattern, open_tag, close_tag in COMMON_REASONING_PATTERNS:
-            matches = list(pattern.finditer(text))
-            if matches:
-                reasoning_parts = [m.group(1) for m in matches]
-                # Remove all matched reasoning blocks from text
-                clean_text = pattern.sub("", text)
-                return clean_text.strip(), "\n---\n".join(reasoning_parts).strip(), open_tag
-
-        # Fallback: Check for closing tag without opening tag (model bug/edge case)
-        # Some models forget the opening <think> but include closing </think>
-        for _, open_tag, close_tag in COMMON_REASONING_PATTERNS:
-            if close_tag in text and open_tag not in text:
-                # Split on closing tag - everything before is reasoning
-                parts = text.split(close_tag, 1)
-                if len(parts) == 2:
-                    reasoning = parts[0].strip()
-                    response = parts[1].strip()
-                    if reasoning and response:
-                        return response, reasoning, f"{close_tag} (missing open tag)"
-                    if reasoning and not response:
-                        # Model spent its whole budget thinking and never
-                        # produced an answer (usually maxTokens truncation).
-                        # Surface it as reasoning rather than passing the raw
-                        # tagged text through as the response.
-                        return "", reasoning, f"{close_tag} (missing open tag, response truncated)"
-
-        # No pattern matched
-        return text, "", None
-
-    def _extract_reasoning_custom(self, text: str, open_tag: str, close_tag: str) -> Tuple[str, str]:
-        """
-        Extract reasoning using custom tags.
-
-        Args:
-            text: Full response text
-            open_tag: Opening tag
-            close_tag: Closing tag
-
-        Returns:
-            Tuple of (response_without_reasoning, reasoning_content)
-        """
-        if not open_tag or open_tag not in text:
-            return text, ""
-
-        reasoning_parts = []
-        response_text = text
-
-        # Extract all reasoning blocks
-        while open_tag in response_text:
-            start_idx = response_text.find(open_tag)
-            end_idx = response_text.find(close_tag, start_idx + len(open_tag))
-
-            if end_idx == -1:
-                # No closing tag - take rest as reasoning
-                reasoning_parts.append(response_text[start_idx + len(open_tag):])
-                response_text = response_text[:start_idx]
-                break
-
-            # Extract reasoning content
-            reasoning_content = response_text[start_idx + len(open_tag):end_idx]
-            reasoning_parts.append(reasoning_content)
-
-            # Remove from response
-            response_text = response_text[:start_idx] + response_text[end_idx + len(close_tag):]
-
-        return response_text.strip(), "\n---\n".join(reasoning_parts).strip()
-
     def generate(
         self,
         system_message: str,
@@ -703,7 +436,7 @@ class EALMStudio:
                     troubleshooting_lines.append(
                         f"[WARNING] Image {idx}: batch of {img_tensor.shape[0]} received; only the first image is used"
                     )
-                pil_img = self._convert_image_to_pil(img_tensor, image_resize)
+                pil_img = convert_image_to_pil(img_tensor, RESIZE_DIMENSIONS.get(image_resize))
                 if pil_img:
                     pil_images.append(pil_img)
                     if image_resize != "No Resize":
@@ -823,10 +556,10 @@ class EALMStudio:
                 reasoning = ""
 
                 if reasoning_mode == "Auto-detect (recommended)":
-                    final_response, reasoning, detected_pattern = self._extract_reasoning_auto(response_text)
+                    final_response, reasoning, detected_pattern = extract_reasoning_auto(response_text)
                     if detected_pattern:
                         troubleshooting_lines.append(f"[INFO] Auto-detected reasoning format: {detected_pattern}")
-                    elif _looks_like_leaked_thinking(response_text):
+                    elif looks_like_leaked_thinking(response_text):
                         # The model thought, but in a tagless plain-text format that
                         # neither LM Studio's parser nor our tag-based extractor caught,
                         # so the reasoning leaked into the response output.
@@ -838,7 +571,7 @@ class EALMStudio:
                     else:
                         troubleshooting_lines.append("[INFO] No reasoning tags detected (model may not have used thinking for this query)")
                 elif reasoning_mode == "Custom tags":
-                    final_response, reasoning = self._extract_reasoning_custom(
+                    final_response, reasoning = extract_reasoning_custom(
                         response_text, custom_open_tag, custom_close_tag
                     )
                 # else: "Disabled" - no extraction

@@ -3,6 +3,13 @@ name = "EA_LMStudio"
 description = "Fully-featured LM Studio integration for ComfyUI: model discovery, vision, reasoning extraction, and full sampler control."
 version = "1.5.0"
 license = {file = "LICENSE"}
+requires-python = ">=3.9"
+dependencies = [
+    "lmstudio>=1.0.0",
+    "requests>=2.27.0",
+    "Pillow>=9.0.0",
+    "numpy>=1.21.0",
+]
 
 [project.urls]
 Repository = "https://github.com/EnragedAntelope/EA_LMStudio"
@@ -12,3 +19,10 @@ Repository = "https://github.com/EnragedAntelope/EA_LMStudio"
 PublisherId = "enragedantelope"
 DisplayName = "EA_LMStudio"
 Icon = ""
+
+[tool.pytest.ini_options]
+# importlib mode avoids treating the repo root (which has an __init__.py for the
+# ComfyUI node package) as an importable package, so tests can import the
+# dependency-light modules directly without pulling in the lmstudio SDK/ComfyUI.
+addopts = "--import-mode=importlib"
+testpaths = ["tests"]

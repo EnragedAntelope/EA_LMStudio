@@ -38,6 +38,8 @@ app.registerExtension({
                 const data = await resp.json();
 
                 if (data.success && data.models) {
+                    // Keep this literal in sync with CUSTOM_MODEL_OPTION in
+                    // model_fetcher.py (the Python side is the source of truth).
                     const choices = ["-- Custom (enter below) --", ...data.models];
 
                     for (const widgetName of ["model_selection", "draft_model_selection"]) {
