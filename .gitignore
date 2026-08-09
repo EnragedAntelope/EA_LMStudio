@@ -1,6 +1,9 @@
 # User configuration (survives updates)
 lms_config/user_config.json
 
+# Local development worklogs / scratch notes (never published)
+worklogs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

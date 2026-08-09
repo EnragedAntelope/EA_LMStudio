@@ -40,3 +40,17 @@ def _ensure_stub(name: str) -> None:
 # time, so bare module objects are enough to let the package import succeed.
 _ensure_stub("lmstudio")
 _ensure_stub("comfy.model_management")
+
+
+# ``LMStudio.py`` is a package module (``from .lms_config import ...``), so it
+# cannot be imported as a top-level module the way the dependency-light modules
+# are. Register the repo root as a synthetic package instead of relying on the
+# checkout directory being named "EA_LMStudio" - a clone into any other folder
+# name would otherwise break the suite. ``__init__.py`` is deliberately not
+# executed: it registers ComfyUI server routes we have no use for here.
+NODE_PACKAGE = "ea_lmstudio_under_test"
+
+if NODE_PACKAGE not in sys.modules:
+    _package = types.ModuleType(NODE_PACKAGE)
+    _package.__path__ = [_REPO_ROOT]
+    sys.modules[NODE_PACKAGE] = _package

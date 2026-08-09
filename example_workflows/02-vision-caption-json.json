@@ -1,0 +1,124 @@
+{
+  "last_node_id": 5,
+  "last_link_id": 3,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Note",
+      "pos": [40, 40],
+      "size": [420, 300],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "EA LM Studio - vision captioning with structured JSON output\n\nSetup:\n1. Load a VISION model (VLM) in LM Studio - e.g. a Qwen-VL or\n   LLaVA-family model. A text-only model will fail on the image input.\n2. Pick it in model_selection (flip refresh_models if the list is stale).\n3. Choose an image in Load Image.\n\nThis example uses output_format = 'JSON (schema below)', so decoding is\nconstrained to the schema and the response is always parseable JSON.\nThat is the reliable mode - 'JSON (no schema)' only asks for JSON and\nmodels often answer with a ```json fenced block instead.\n\nimage_resize caps the longest edge before upload. Smaller is faster and\navoids out-of-memory on large VLMs; use 'No Resize' only when fine detail\nmatters.\n\nUp to four images can be connected, but not every VLM accepts more than one."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "pos": [40, 380],
+      "size": [420, 440],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        { "name": "IMAGE", "type": "IMAGE", "links": [1], "slot_index": 0 },
+        { "name": "MASK", "type": "MASK", "links": null, "slot_index": 1 }
+      ],
+      "properties": { "Node name for S&R": "LoadImage" },
+      "widgets_values": ["example.png", "image"]
+    },
+    {
+      "id": 3,
+      "type": "EA_LMStudio",
+      "pos": [500, 40],
+      "size": [480, 820],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        { "name": "image1", "type": "IMAGE", "link": 1, "shape": 7 },
+        { "name": "image2", "type": "IMAGE", "link": null, "shape": 7 },
+        { "name": "image3", "type": "IMAGE", "link": null, "shape": 7 },
+        { "name": "image4", "type": "IMAGE", "link": null, "shape": 7 }
+      ],
+      "outputs": [
+        { "name": "response", "type": "STRING", "links": [2], "slot_index": 0 },
+        { "name": "reasoning", "type": "STRING", "links": null, "slot_index": 1 },
+        { "name": "troubleshooting", "type": "STRING", "links": [3], "slot_index": 2 }
+      ],
+      "properties": { "Node name for S&R": "EA_LMStudio" },
+      "widgets_values": [
+        "You are an image captioning assistant. Describe only what is visible. Do not speculate.",
+        "Describe this image.",
+        "-- Custom (enter below) --",
+        "",
+        400,
+        0.3,
+        0,
+        "randomize",
+        "Medium (768px)",
+        "-- Custom (enter below) --",
+        "",
+        1,
+        0,
+        1,
+        0,
+        "",
+        "Truncate middle",
+        "JSON (schema below)",
+        "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"caption\": { \"type\": \"string\" },\n    \"subjects\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"setting\": { \"type\": \"string\" },\n    \"mood\": { \"type\": \"string\" }\n  },\n  \"required\": [\"caption\", \"subjects\", \"setting\", \"mood\"]\n}",
+        "Auto-detect (recommended)",
+        "<think>",
+        "</think>",
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "id": 4,
+      "type": "PreviewAny",
+      "pos": [1020, 40],
+      "size": [400, 320],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [{ "name": "source", "type": "*", "link": 2 }],
+      "outputs": [],
+      "properties": { "Node name for S&R": "PreviewAny" },
+      "widgets_values": [],
+      "title": "Caption (JSON)"
+    },
+    {
+      "id": 5,
+      "type": "PreviewAny",
+      "pos": [1020, 400],
+      "size": [400, 420],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [{ "name": "source", "type": "*", "link": 3 }],
+      "outputs": [],
+      "properties": { "Node name for S&R": "PreviewAny" },
+      "widgets_values": [],
+      "title": "Troubleshooting + inference stats"
+    }
+  ],
+  "links": [
+    [1, 2, 0, 3, 0, "IMAGE"],
+    [2, 3, 0, 4, 0, "STRING"],
+    [3, 3, 2, 5, 0, "STRING"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}
