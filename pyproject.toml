@@ -1,10 +1,16 @@
 [project]
 name = "EA_LMStudio"
 description = "Fully-featured LM Studio integration for ComfyUI: model discovery, vision, reasoning extraction, and full sampler control."
-version = "1.5.1"
+version = "2.0.0"
 license = {file = "LICENSE"}
-requires-python = ">=3.9"
+# The lmstudio SDK itself declares Requires-Python >=3.10, so 3.9 was never
+# actually installable regardless of what this said.
+requires-python = ">=3.10"
 dependencies = [
+    # LlmPredictionFragment.reasoning_type (LM Studio's own reasoning split) and
+    # PredictionResult.prediction_config (the applied-config check) are read
+    # defensively, so an older SDK degrades to tag-regex extraction rather than
+    # failing. Verified present from 1.0.1 onwards.
     "lmstudio>=1.0.0",
     "requests>=2.27.0",
     "Pillow>=9.0.0",

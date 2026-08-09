@@ -14,6 +14,10 @@ logger = logging.getLogger("EA_LMStudio")
 _cached_models: List[str] = []
 _last_fetch_error: Optional[str] = None
 _last_fetch_success: bool = False
+# Model IDs the server offered but validate_model_identifier refused. Kept so the
+# node can say *why* a model is missing from the dropdown instead of it just not
+# being there (LM Studio does hand out ids like "some-model@?" in practice).
+_last_rejected_models: List[str] = []
 
 # Constants
 CUSTOM_MODEL_OPTION = "-- Custom (enter below) --"
@@ -69,7 +73,7 @@ def fetch_models_from_server(
     server_url: str,
     timeout: float = 5.0,
     excluded_patterns: Optional[List[str]] = None,
-) -> tuple[List[str], Optional[str]]:
+) -> tuple[List[str], Optional[str], List[str]]:
     """
     Fetch available models from LM Studio server.
 
@@ -80,11 +84,13 @@ def fetch_models_from_server(
             If None, uses default ["embedding"]. Pass an empty list to include all models.
 
     Returns:
-        Tuple of (model_list, error_message)
+        Tuple of (model_list, error_message, rejected_models)
         - model_list: Filtered list of model IDs, empty on failure
         - error_message: None on success, descriptive error on failure
+        - rejected_models: IDs the server offered that failed validation
     """
     models: List[str] = []
+    rejected: List[str] = []
     error: Optional[str] = None
 
     # Default to ["embedding"] if no patterns specified
@@ -106,7 +112,7 @@ def fetch_models_from_server(
         if "data" not in data:
             error = "Unexpected response format from LM Studio (missing 'data' field)"
             logger.warning(f"EA_LMStudio: {error}")
-            return models, error
+            return models, error, rejected
 
         for model in data["data"]:
             model_id = model.get("id", "")
@@ -120,9 +126,14 @@ def fetch_models_from_server(
                 continue
 
             # Validate the model ID before adding
-            is_valid, _ = validate_model_identifier(model_id)
+            is_valid, reason = validate_model_identifier(model_id)
             if is_valid:
                 models.append(model_id)
+            else:
+                rejected.append(model_id)
+                logger.warning(
+                    f"EA_LMStudio: hiding model {model_id!r} from the dropdown - {reason}"
+                )
 
         # Sort alphabetically for easier navigation
         models.sort(key=str.lower)
@@ -148,7 +159,7 @@ def fetch_models_from_server(
         error = f"Unexpected error fetching models: {type(e).__name__}: {str(e)}"
         logger.error(f"EA_LMStudio: {error}")
 
-    return models, error
+    return models, error, rejected
 
 
 def get_model_choices() -> List[str]:
@@ -168,6 +179,17 @@ def get_model_choices() -> List[str]:
     return choices
 
 
+def get_default_model_choice() -> str:
+    """Default selection for the main model dropdown.
+
+    The first *real* model when discovery worked, so a freshly added node is
+    runnable straight away. Previously this resolved to the "Custom" sentinel in
+    every case (it took choices[0], which is always the sentinel), so a new node
+    always failed its first run with "No model selected".
+    """
+    return _cached_models[0] if _cached_models else CUSTOM_MODEL_OPTION
+
+
 def refresh_model_cache(
     server_url: str,
     timeout: float = 5.0,
@@ -185,9 +207,9 @@ def refresh_model_cache(
     Returns:
         Tuple of (success, message)
     """
-    global _cached_models, _last_fetch_error, _last_fetch_success
+    global _cached_models, _last_fetch_error, _last_fetch_success, _last_rejected_models
 
-    models, error = fetch_models_from_server(server_url, timeout, excluded_patterns)
+    models, error, rejected = fetch_models_from_server(server_url, timeout, excluded_patterns)
 
     if error:
         _last_fetch_error = error
@@ -195,13 +217,19 @@ def refresh_model_cache(
         return False, error
 
     _cached_models = models
+    _last_rejected_models = rejected
     _last_fetch_error = None
     _last_fetch_success = True
 
+    suffix = f" ({len(rejected)} hidden - unsafe identifier)" if rejected else ""
+
     if models:
-        return True, f"Successfully loaded {len(models)} models from LM Studio"
+        return True, f"Successfully loaded {len(models)} models from LM Studio{suffix}"
     else:
-        return True, "Connected to LM Studio but no models found (embedding models are excluded)"
+        return True, (
+            "Connected to LM Studio but no models found "
+            f"(embedding models are excluded){suffix}"
+        )
 
 
 def initialize_model_cache(server_url: str, timeout: float = 5.0, excluded_patterns=None) -> None:
@@ -231,3 +259,8 @@ def get_last_fetch_success() -> bool:
 def get_cached_model_count() -> int:
     """Get the number of currently cached models."""
     return len(_cached_models)
+
+
+def get_last_rejected_models() -> List[str]:
+    """Model IDs the last successful fetch refused as unsafe identifiers."""
+    return list(_last_rejected_models)

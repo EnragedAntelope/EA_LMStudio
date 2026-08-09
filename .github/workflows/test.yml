@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor matches requires-python; the newest release guards against
+        # deprecations landing in a future ComfyUI runtime.
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install test dependencies
+        # requirements-dev.txt pulls in requirements.txt (requests, Pillow,
+        # numpy, lmstudio). The suite stubs lmstudio and comfy when they are
+        # missing, so it also has to pass without a running LM Studio - the
+        # startup model fetch simply fails to connect and is handled.
+        run: pip install -r requirements-dev.txt
+      - name: Run tests
+        run: pytest -q

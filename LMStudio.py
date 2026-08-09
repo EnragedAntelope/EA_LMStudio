@@ -3,7 +3,7 @@ EA LM Studio Node - ComfyUI integration for LM Studio
 Provides text generation using local LLM/VLM models via LM Studio server.
 """
 import logging
-from typing import Optional, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
 import os
 import time
 from tempfile import NamedTemporaryFile
@@ -15,22 +15,38 @@ import lmstudio as lms
 # ComfyUI imports
 import comfy.model_management as model_management
 
+try:  # Optional: only used to drive the queue progress bar.
+    from comfy.utils import ProgressBar
+except Exception:  # pragma: no cover - ComfyUI always provides this at runtime
+    ProgressBar = None
+
 # Local imports
 from .lms_config.config_manager import ConfigManager
 from .model_fetcher import (
     get_model_choices,
+    get_default_model_choice,
     refresh_model_cache,
     initialize_model_cache,
     validate_model_identifier,
     get_last_fetch_error,
     get_last_fetch_success,
     get_cached_model_count,
+    get_last_rejected_models,
     CUSTOM_MODEL_OPTION,
 )
 from .lms_reasoning import (
     extract_reasoning_auto,
     extract_reasoning_custom,
     looks_like_leaked_thinking,
+)
+from .lms_params import (
+    CONTEXT_OVERFLOW_OPTIONS,
+    CONTEXT_OVERFLOW_POLICIES,
+    OUTPUT_FORMAT_OPTIONS,
+    build_structured_setting,
+    missing_config_keys,
+    parse_stop_strings,
+    strip_json_code_fence,
 )
 from .lms_image import convert_image_to_pil
 
@@ -98,6 +114,15 @@ initialize_model_cache(
     excluded_patterns=_config_manager.get_excluded_patterns(_startup_config),
 )
 
+# ComfyUI's cancel button sets an interrupt flag. We poll it while streaming so a
+# runaway generation can actually be stopped, then re-raise so the queue reports
+# a cancellation rather than a node error. The class is looked up defensively so
+# the module still imports under a stubbed ``comfy`` (tests, registry scanners).
+_INTERRUPT_EXCEPTION = getattr(model_management, "InterruptProcessingException", None)
+_INTERRUPT_EXCEPTIONS: Tuple[type, ...] = (
+    (_INTERRUPT_EXCEPTION,) if isinstance(_INTERRUPT_EXCEPTION, type) else ()
+)
+
 # Image resize options
 IMAGE_RESIZE_OPTIONS = [
     "No Resize",
@@ -123,18 +148,29 @@ REASONING_MODE_OPTIONS = [
     "Custom tags",
 ]
 
-# enable_thinking toggle options. "Model default" leaves the model's own
-# behavior untouched (nothing is sent); the other two force thinking on/off
-# for hybrid reasoning models (e.g. Qwen3) via the SDK's enableThinking flag.
-ENABLE_THINKING_OPTIONS = [
-    "Model default",
-    "Enabled",
-    "Disabled",
-]
-
 # Reasoning/thinking extraction (regexes + helpers) lives in lms_reasoning.py
 # so the pure text-processing logic stays importable and unit-testable without
 # pulling in the lmstudio SDK, ComfyUI, or the startup network fetch.
+
+# ``draftModel`` is excluded from the applied-config check: LM Studio only echoes
+# speculative-decoding settings back when the draft model was actually accepted,
+# and we have no way to distinguish "not echoed" from "not applied" here. A false
+# "this did nothing" warning would be worse than no warning.
+_UNVERIFIABLE_CONFIG_KEYS = frozenset({"draftModel"})
+
+# Keep long values (stop strings, JSON schemas) from flooding the config summary.
+_CONFIG_SUMMARY_VALUE_LIMIT = 120
+
+
+def _summarize_config(gen_config: Dict[str, Any]) -> str:
+    """Render the generation config as one readable line."""
+    parts = []
+    for key, value in gen_config.items():
+        text = repr(value) if isinstance(value, (str, list, dict)) else str(value)
+        if len(text) > _CONFIG_SUMMARY_VALUE_LIMIT:
+            text = text[:_CONFIG_SUMMARY_VALUE_LIMIT] + "...(truncated)"
+        parts.append(f"{key}={text}")
+    return ", ".join(parts)
 
 
 class EALMStudio:
@@ -148,13 +184,25 @@ class EALMStudio:
     CATEGORY = "EA/LMStudio"
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("response", "reasoning", "troubleshooting")
+    # OUTPUT_NODE lets the node run as a graph terminal (so it can be queued
+    # without wiring its outputs anywhere) AND carries the ``ui`` payload that
+    # renders the response inside the node. Both halves matter: without the
+    # payload the flag would only cost a wasted inference on disconnected nodes.
     OUTPUT_NODE = True
     FUNCTION = "generate"
+    DESCRIPTION = (
+        "Generate text with a local LM Studio model. Supports vision models, "
+        "reasoning extraction, structured JSON output and VRAM management."
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
         model_choices = get_model_choices()
-        default_model = model_choices[0] if model_choices else CUSTOM_MODEL_OPTION
+        # Default to a real model when discovery worked, so a freshly dropped
+        # node is runnable instead of landing on the "Custom" sentinel with an
+        # empty identifier. The draft dropdown keeps the sentinel: speculative
+        # decoding must stay opt-in.
+        default_model = get_default_model_choice()
 
         return {
             "required": {
@@ -197,36 +245,15 @@ class EALMStudio:
                     "default": 0,
                     "min": 0,
                     "max": 0xffffffffffffffff,
-                    "tooltip": "Seed for ComfyUI workflow reproducibility. Note: LM Studio SDK does not support inference-time seeding."
+                    "tooltip": "Re-roll control only. LM Studio has no inference-time seed, so this does NOT make output reproducible - changing it simply tells ComfyUI the node is dirty so it generates again instead of reusing the cached response. Set control_after_generate to 'randomize' for a fresh answer every queue, or 'fixed' to keep the cached one."
                 }),
             },
+            # Widget order below is the on-node layout. Grouped most-used first:
+            # sampling -> output shaping -> reasoning -> vision -> speculative
+            # decoding -> management. Each group's dependent fields follow the
+            # control that switches them on, and every dependent field's tooltip
+            # names that control, so the layout reads top-to-bottom.
             "optional": {
-                # --- Image inputs (for VLMs) ---
-                "image_resize": (IMAGE_RESIZE_OPTIONS, {
-                    "default": "Medium (768px)",
-                    "tooltip": "Resize images before processing. Smaller = faster inference. 'No Resize' keeps original size. Only applies when images are connected."
-                }),
-                "image1": ("IMAGE", {
-                    "tooltip": "First image input for vision models (VLMs). Leave unconnected for text-only inference."
-                }),
-                "image2": ("IMAGE", {
-                    "tooltip": "Second image input for multi-image VLMs. Not all VLMs support multiple images."
-                }),
-                "image3": ("IMAGE", {
-                    "tooltip": "Third image input for multi-image VLMs. Not all VLMs support multiple images."
-                }),
-                "image4": ("IMAGE", {
-                    "tooltip": "Fourth image input for multi-image VLMs. Not all VLMs support multiple images."
-                }),
-                # --- Advanced model options ---
-                "draft_model_selection": (model_choices, {
-                    "default": default_model,
-                    "tooltip": "Optional draft model for speculative decoding (faster inference). Select 'Custom' and leave empty to disable."
-                }),
-                "custom_draft_model": ("STRING", {
-                    "default": "",
-                    "tooltip": "Manual draft model identifier. Only used when draft 'Custom' is selected. Leave empty to disable."
-                }),
                 # --- Sampling parameters ---
                 "top_p": ("FLOAT", {
                     "default": 1.0,
@@ -247,7 +274,7 @@ class EALMStudio:
                     "min": 0.0,
                     "max": 2.0,
                     "step": 0.05,
-                    "tooltip": "Penalizes tokens that already appeared, scaled by how often (default 1.0 = disabled). Raising (1.1-1.3) reduces repetition/loops; too high can hurt coherence. Below 1.0 encourages repetition."
+                    "tooltip": "Penalizes tokens that already appeared, scaled by how often (default 1.0 = disabled). Raising (1.1-1.3) reduces repetition/loops; too high can hurt coherence. Below 1.0 encourages repetition. LM Studio has no presence or frequency penalty - this and min_p are the repetition controls it offers."
                 }),
                 "min_p": ("FLOAT", {
                     "default": 0.0,
@@ -256,21 +283,29 @@ class EALMStudio:
                     "step": 0.01,
                     "tooltip": "Min-P sampling: drop tokens below this fraction of the top token's probability (default 0.0 = disabled). Raising (e.g. 0.05-0.1) = more focused/coherent; lowering toward 0 = more diverse. A modern alternative to top_p."
                 }),
-                "presence_penalty": ("FLOAT", {
-                    "default": 0.0,
-                    "min": -2.0,
-                    "max": 2.0,
-                    "step": 0.05,
-                    "tooltip": "Flat penalty on any token already used, encouraging new topics (default 0.0 = disabled). Raising (e.g. 0.3-0.8) reduces repetition / broadens topics; negative values encourage reuse. Distinct from repeat_penalty. Note: LM Studio has no frequency_penalty."
+                # --- Output shaping ---
+                "stop_strings": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Stop generation when any of these strings appears. One per line; blank lines ignored. Leading/trailing spaces are kept, and \\n \\r \\t \\\\ are expanded - so a line of '\\nUser:' stops at a newline followed by 'User:'. Empty = no stop strings. Useful to stop a chatty model running on past the answer."
                 }),
-                "enable_thinking": (ENABLE_THINKING_OPTIONS, {
-                    "default": "Model default",
-                    "tooltip": "Force thinking/reasoning on hybrid models like Qwen3 without the '/think' prompt hack (default 'Model default' = leave the model's own behavior untouched). 'Enabled' turns thinking on; 'Disabled' turns it off. Pairs with reasoning_mode. Ignored by models/backends that don't support it."
+                "context_overflow": (CONTEXT_OVERFLOW_OPTIONS, {
+                    "default": "Truncate middle",
+                    "tooltip": "What LM Studio does when prompt + response exceed the model's context window. 'Truncate middle' (default) silently drops the middle of the conversation. 'Rolling window' drops from the start. 'Stop at limit (error)' fails loudly instead - pick it if a silently shortened prompt would be worse than no answer."
+                }),
+                "output_format": (OUTPUT_FORMAT_OPTIONS, {
+                    "default": "Text",
+                    "tooltip": "'Text' = normal prose. 'JSON (schema below)' constrains decoding to the schema in json_schema and is the reliable choice when a downstream node must parse the response. 'JSON (no schema)' only asks for JSON - it does NOT constrain decoding, and many models answer with a ```json fenced block (which is unwrapped automatically when the contents are valid JSON). Structured output and thinking models mix poorly."
+                }),
+                "json_schema": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "JSON Schema object, used only when output_format is 'JSON (schema below)'. Example: {\"type\": \"object\", \"properties\": {\"caption\": {\"type\": \"string\"}}, \"required\": [\"caption\"]}"
                 }),
                 # --- Reasoning extraction ---
                 "reasoning_mode": (REASONING_MODE_OPTIONS, {
                     "default": "Auto-detect (recommended)",
-                    "tooltip": "How to extract reasoning/thinking from model output. Auto-detect works with DeepSeek, Qwen, QwQ, GLM, GPT-OSS and similar models. Note: Models don't always produce thinking output for simple queries. For Qwen3, add '/think' to your prompt to force thinking mode."
+                    "tooltip": "How to split thinking from the final answer. When LM Studio's own Reasoning Parsing is configured for the model, its tagging is used directly and this setting is not needed. Otherwise Auto-detect handles DeepSeek, Qwen, QwQ, GLM, GPT-OSS and similar tag formats. Models don't always think for simple queries."
                 }),
                 "custom_open_tag": ("STRING", {
                     "default": "<think>",
@@ -280,10 +315,36 @@ class EALMStudio:
                     "default": "</think>",
                     "tooltip": "Custom closing tag for reasoning extraction. Only used when reasoning_mode is 'Custom tags'."
                 }),
+                # --- Vision (only relevant when an image input is connected) ---
+                "image_resize": (IMAGE_RESIZE_OPTIONS, {
+                    "default": "Medium (768px)",
+                    "tooltip": "Resize images before processing. Smaller = faster inference. 'No Resize' keeps original size. Only applies when images are connected."
+                }),
+                "image1": ("IMAGE", {
+                    "tooltip": "First image input for vision models (VLMs). Leave unconnected for text-only inference."
+                }),
+                "image2": ("IMAGE", {
+                    "tooltip": "Second image input for multi-image VLMs. Not all VLMs support multiple images."
+                }),
+                "image3": ("IMAGE", {
+                    "tooltip": "Third image input for multi-image VLMs. Not all VLMs support multiple images."
+                }),
+                "image4": ("IMAGE", {
+                    "tooltip": "Fourth image input for multi-image VLMs. Not all VLMs support multiple images."
+                }),
+                # --- Speculative decoding ---
+                "draft_model_selection": (model_choices, {
+                    "default": CUSTOM_MODEL_OPTION,
+                    "tooltip": "Optional draft model for speculative decoding (faster inference). Must share a tokenizer with the main model. Leave on 'Custom' with an empty box to disable. Acceptance stats are reported in troubleshooting."
+                }),
+                "custom_draft_model": ("STRING", {
+                    "default": "",
+                    "tooltip": "Manual draft model identifier. Only used when draft 'Custom' is selected. Leave empty to disable."
+                }),
                 # --- Management ---
                 "unload_llm": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Unload the LLM from LM Studio after generation. Recommended to free VRAM for image generation."
+                    "tooltip": "Unload the LLM from LM Studio after generation. Recommended to free VRAM for image generation. Turn off to keep the model warm across runs (this also unloads a model you loaded by hand in LM Studio)."
                 }),
                 "unload_comfy_models": ("BOOLEAN", {
                     "default": False,
@@ -307,6 +368,30 @@ class EALMStudio:
         if kwargs.get("refresh_models", False):
             return float("nan")  # Always different
         return ""
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _output(
+        response: str, reasoning: str, troubleshooting_lines: List[str]
+    ) -> Dict[str, Any]:
+        """Build the node return value.
+
+        Because this is an OUTPUT_NODE, the ``ui`` half is what makes the flag
+        worth having: the response is rendered inside the node itself, so the
+        common "just enhance my prompt" workflow needs no extra preview node.
+        """
+        troubleshooting = "\n".join(troubleshooting_lines)
+        return {
+            "ui": {
+                "text": [response],
+                "reasoning": [reasoning],
+                "troubleshooting": [troubleshooting],
+            },
+            "result": (response, reasoning, troubleshooting),
+        }
 
     def _resolve_model_identifier(
         self,
@@ -336,6 +421,94 @@ class EALMStudio:
 
         return model_id, None
 
+    @staticmethod
+    def _prepare_images(client, pil_images: List[Image.Image]) -> List[Any]:
+        """Upload PIL images to LM Studio and return its file handles.
+
+        Each image is written to a temp file, closed, uploaded, then deleted.
+        The file is closed before uploading because on Windows a second reader
+        of a still-open handle is not guaranteed, and deletion of an open file
+        fails outright.
+        """
+        handles = []
+        for pil_img in pil_images:
+            temp_path = None
+            try:
+                with NamedTemporaryFile(suffix=".jpg", delete=False) as temp:
+                    temp_path = temp.name
+                    pil_img.save(temp, format="JPEG", quality=95)
+                handles.append(client.files.prepare_image(temp_path))
+            finally:
+                if temp_path:
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
+        return handles
+
+    @staticmethod
+    def _stats_lines(stats, elapsed: float) -> List[str]:
+        """Format inference statistics, tolerating fields the backend omits.
+
+        Every count on LlmPredictionStats except stop_reason is Optional, so a
+        bare f-string format spec (e.g. ``:.2f`` on None) raises TypeError. That
+        used to surface as "Generation failed" *after* a successful generation,
+        discarding the text the model had already produced.
+        """
+        lines = []
+
+        def value(name, default=None):
+            return getattr(stats, name, default)
+
+        tokens_per_sec = value("tokens_per_second")
+        if tokens_per_sec is not None:
+            lines.append(f"[INFO] Tokens per second: {tokens_per_sec:.2f}")
+
+        for label, attr in (
+            ("Input tokens", "prompt_tokens_count"),
+            ("Output tokens", "predicted_tokens_count"),
+            ("Total tokens", "total_tokens_count"),
+        ):
+            count = value(attr)
+            if count is not None:
+                lines.append(f"[INFO] {label}: {count}")
+
+        ttft = value("time_to_first_token_sec")
+        if ttft is not None:
+            lines.append(f"[INFO] Time to first token: {ttft:.3f}s")
+
+        gpu_layers = value("num_gpu_layers")
+        if gpu_layers is not None:
+            lines.append(f"[INFO] GPU layers: {gpu_layers:g}")
+
+        # Speculative decoding: without acceptance numbers there is no way to
+        # tell whether a draft model is helping or just burning time.
+        drafted = value("total_draft_tokens_count")
+        if drafted:
+            accepted = value("accepted_draft_tokens_count") or 0
+            rejected = value("rejected_draft_tokens_count") or 0
+            rate = (accepted / drafted * 100.0) if drafted else 0.0
+            draft_key = value("used_draft_model_key")
+            if draft_key:
+                lines.append(f"[INFO] Draft model used: {draft_key}")
+            lines.append(
+                f"[INFO] Speculative decoding: {accepted}/{drafted} draft tokens accepted "
+                f"({rate:.0f}%), {rejected} rejected"
+            )
+            if rate < 30.0:
+                lines.append(
+                    "[HINT] Low draft acceptance - this draft model may be slowing "
+                    "generation down. Try a smaller/closer-matched draft model or disable it."
+                )
+
+        lines.append(f"[INFO] Stop reason: {value('stop_reason', 'unknown')}")
+        lines.append(f"[INFO] Total time: {elapsed:.2f}s")
+        return lines
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
+
     def generate(
         self,
         system_message: str,
@@ -356,22 +529,25 @@ class EALMStudio:
         top_k: int = 0,
         repeat_penalty: float = 1.0,
         min_p: float = 0.0,
-        presence_penalty: float = 0.0,
-        enable_thinking: str = "Model default",
+        stop_strings: str = "",
+        context_overflow: str = "Truncate middle",
+        output_format: str = "Text",
+        json_schema: str = "",
         reasoning_mode: str = "Auto-detect (recommended)",
         custom_open_tag: str = "<think>",
         custom_close_tag: str = "</think>",
         unload_llm: bool = True,
         unload_comfy_models: bool = False,
         refresh_models: bool = False
-    ) -> Tuple[str, str, str]:
+    ) -> Dict[str, Any]:
         """
         Generate text using LM Studio.
 
         Returns:
-            Tuple of (response_text, reasoning_text, troubleshooting_info)
+            A ComfyUI node result dict carrying both the (response, reasoning,
+            troubleshooting) tuple and the ``ui`` payload rendered in the node.
         """
-        troubleshooting_lines = []
+        troubleshooting_lines: List[str] = []
 
         # Get current config (read the file once and derive everything from it)
         config = _config_manager.get_config()
@@ -395,18 +571,31 @@ class EALMStudio:
         if last_error and not get_last_fetch_success():
             troubleshooting_lines.append(f"[WARNING] Startup model fetch: {last_error}")
 
+        # Models LM Studio offered but we could not accept: without this the
+        # model just silently isn't in the dropdown and nobody knows why.
+        # Informational, not a warning: it is a standing condition the user
+        # usually cannot act on, and repeating it as a WARNING every single run
+        # would just train people to ignore the warning prefix.
+        rejected = get_last_rejected_models()
+        if rejected:
+            troubleshooting_lines.append(
+                f"[INFO] {len(rejected)} model(s) hidden from the dropdown - "
+                "LM Studio reported an identifier with unsupported characters: "
+                + ", ".join(repr(m) for m in rejected)
+            )
+
         # Resolve main model
         model_identifier, error = self._resolve_model_identifier(
             model_selection, custom_model_name, "model"
         )
         if error:
             troubleshooting_lines.append(f"[ERROR] {error}")
-            return "", "", "\n".join(troubleshooting_lines)
+            return self._output("", "", troubleshooting_lines)
 
         if not model_identifier:
             error_msg = "No model selected. Choose a model from dropdown or enter a custom model name."
             troubleshooting_lines.append(f"[ERROR] {error_msg}")
-            return "", "", "\n".join(troubleshooting_lines)
+            return self._output("", "", troubleshooting_lines)
 
         troubleshooting_lines.append(f"[INFO] Model: {model_identifier}")
 
@@ -417,8 +606,23 @@ class EALMStudio:
         if error:
             troubleshooting_lines.append(f"[WARNING] Draft model error: {error}")
             draft_model = None
+        elif draft_model and draft_model == model_identifier:
+            troubleshooting_lines.append(
+                "[WARNING] Draft model is the same as the main model - speculative "
+                "decoding disabled (it would only load the same weights twice)"
+            )
+            draft_model = None
         elif draft_model:
             troubleshooting_lines.append(f"[INFO] Draft model: {draft_model}")
+
+        # Structured output must be resolved before any model work: a broken
+        # schema should fail instantly, not after loading a model.
+        structured, structured_error = build_structured_setting(output_format, json_schema)
+        if structured_error:
+            troubleshooting_lines.append(f"[ERROR] {structured_error}")
+            return self._output("", "", troubleshooting_lines)
+
+        stops = parse_stop_strings(stop_strings)
 
         # Unload ComfyUI models if requested
         if unload_comfy_models:
@@ -469,41 +673,26 @@ class EALMStudio:
 
                 # Add user message (with optional images)
                 if pil_images:
-                    # Prepare all images for the SDK
-                    image_handles = []
-                    temp_paths = []
-                    try:
-                        for pil_img in pil_images:
-                            with NamedTemporaryFile(suffix=".jpg", delete=False) as temp:
-                                pil_img.save(temp, format="JPEG", quality=95)
-                                temp.flush()
-                                temp_paths.append(temp.name)
-                                image_handle = client.files.prepare_image(temp.name)
-                                image_handles.append(image_handle)
-                    finally:
-                        for path in temp_paths:
-                            try:
-                                os.unlink(path)
-                            except OSError:
-                                pass
-
-                    chat.add_user_message(prompt, images=image_handles)
+                    chat.add_user_message(prompt, images=self._prepare_images(client, pil_images))
                 else:
                     chat.add_user_message(prompt)
 
-                # Build generation config
-                gen_config = {
+                # Build generation config.
+                # Keys are validated against LlmPredictionConfigDict in the
+                # lmstudio SDK. Anything not in that type is DISCARDED SILENTLY
+                # by the SDK before the request leaves the machine, so a wrong
+                # key looks like it worked - the applied-config check below is
+                # what makes that visible.
+                gen_config: Dict[str, Any] = {
                     "temperature": temperature,
                     "maxTokens": max_tokens,
-                    # Handle context overflow by truncating middle of conversation
-                    "contextOverflowPolicy": "truncateMiddle",
+                    "contextOverflowPolicy": CONTEXT_OVERFLOW_POLICIES.get(
+                        context_overflow, "truncateMiddle"
+                    ),
                 }
 
                 # Add optional parameters only when set away from their disabled
-                # default, so default workflows send nothing extra (and stay safe
-                # on older LM Studio backends, which silently ignore params they
-                # don't support rather than erroring).
-                # Key names validated against LM Studio 0.4.17 / LLMPredictionConfigInput.
+                # default, so default workflows send nothing extra.
                 if top_p < 1.0:
                     gen_config["topPSampling"] = top_p
                 if top_k > 0:
@@ -512,69 +701,93 @@ class EALMStudio:
                     gen_config["repeatPenalty"] = repeat_penalty
                 if min_p > 0.0:
                     gen_config["minPSampling"] = min_p
-                if presence_penalty != 0.0:
-                    gen_config["presencePenalty"] = presence_penalty
-                if enable_thinking != "Model default":
-                    gen_config["enableThinking"] = (enable_thinking == "Enabled")
-                # Note: seed is not a valid inference-time parameter in LM Studio SDK
+                if stops:
+                    gen_config["stopStrings"] = stops
+                if structured:
+                    gen_config["structured"] = structured
                 if draft_model:
                     gen_config["draftModel"] = draft_model
 
-                # Show every parameter actually being sent, so the user can confirm
-                # exactly what is applied. Params left at their disabled default are
-                # omitted above and therefore won't appear here.
-                config_summary = ", ".join(f"{k}={v}" for k, v in gen_config.items())
-                troubleshooting_lines.append(f"[INFO] Config: {config_summary}")
+                troubleshooting_lines.append(f"[INFO] Config: {_summarize_config(gen_config)}")
                 troubleshooting_lines.append("[INFO] Generating...")
 
                 start_time = time.time()
-                # Generate response
-                response = model.respond(chat, config=gen_config)
-                response_text = str(response)
-
-                troubleshooting_lines.append("[INFO] Generation complete")
-                troubleshooting_lines.append(f"[INFO] Raw response length: {len(response_text)} chars")
-
-                # Extract inference statistics
-                tokens_per_sec = getattr(response.stats, 'tokens_per_second', 0.0)
-                input_tokens = getattr(response.stats, 'prompt_tokens_count', 0)
-                output_tokens = getattr(response.stats, 'predicted_tokens_count', 0)
-                time_to_first_token = getattr(response.stats, 'time_to_first_token_sec', None)
-                stop_reason = getattr(response.stats, 'stop_reason', 'unknown')
+                response, native_reasoning, plain_content, interrupted = self._stream(
+                    model, chat, gen_config, max_tokens
+                )
                 elapsed = time.time() - start_time
 
-                troubleshooting_lines.append(f"[INFO] Tokens per second: {tokens_per_sec:.2f}")
-                troubleshooting_lines.append(f"[INFO] Input tokens: {input_tokens}")
-                troubleshooting_lines.append(f"[INFO] Output tokens: {output_tokens}")
-                if time_to_first_token is not None:
-                    troubleshooting_lines.append(f"[INFO] Time to first token: {time_to_first_token:.3f}s")
-                troubleshooting_lines.append(f"[INFO] Stop reason: {stop_reason}")
-                troubleshooting_lines.append(f"[INFO] Total time: {elapsed:.2f}s")
-
-                # Extract reasoning based on mode
-                final_response = response_text
-                reasoning = ""
-
-                if reasoning_mode == "Auto-detect (recommended)":
-                    final_response, reasoning, detected_pattern = extract_reasoning_auto(response_text)
-                    if detected_pattern:
-                        troubleshooting_lines.append(f"[INFO] Auto-detected reasoning format: {detected_pattern}")
-                    elif looks_like_leaked_thinking(response_text):
-                        # The model thought, but in a tagless plain-text format that
-                        # neither LM Studio's parser nor our tag-based extractor caught,
-                        # so the reasoning leaked into the response output.
-                        troubleshooting_lines.append("[WARNING] Output looks like tagless thinking that leaked into the response (no <think>-style tags found)")
-                        if enable_thinking == "Disabled":
-                            troubleshooting_lines.append("[HINT] This model kept thinking despite enable_thinking=Disabled - its chat template likely ignores the enableThinking flag (common for community merges/finetunes)")
-                        troubleshooting_lines.append("[HINT] To fix in LM Studio: set this model's Reasoning Parsing delimiters, or edit its Jinja template to hard-disable thinking ({%- set enable_thinking = false %})")
-                        troubleshooting_lines.append("[HINT] Or, if the model uses a consistent marker, switch reasoning_mode to 'Custom tags' and set the open/close tags")
-                    else:
-                        troubleshooting_lines.append("[INFO] No reasoning tags detected (model may not have used thinking for this query)")
-                elif reasoning_mode == "Custom tags":
-                    final_response, reasoning = extract_reasoning_custom(
-                        response_text, custom_open_tag, custom_close_tag
+                if interrupted:
+                    troubleshooting_lines.append(
+                        "[WARNING] Cancelled from ComfyUI - partial output returned"
                     )
-                # else: "Disabled" - no extraction
+                else:
+                    troubleshooting_lines.append("[INFO] Generation complete")
+
+                response_text = response.content
+                troubleshooting_lines.append(f"[INFO] Raw response length: {len(response_text)} chars")
+
+                # Verify the server actually applied what we asked for. The SDK
+                # drops unknown keys without a word, so this is the only way a
+                # parameter that quietly does nothing becomes visible.
+                try:
+                    applied = response.prediction_config.to_dict()
+                except Exception:  # pragma: no cover - defensive
+                    applied = {}
+                if applied:
+                    ignored = [
+                        key for key in missing_config_keys(gen_config, applied)
+                        if key not in _UNVERIFIABLE_CONFIG_KEYS
+                    ]
+                    if ignored:
+                        troubleshooting_lines.append(
+                            f"[WARNING] LM Studio did not apply: {', '.join(ignored)} - "
+                            "your installed lmstudio package or LM Studio build may be too old for these"
+                        )
+
+                troubleshooting_lines.extend(self._stats_lines(response.stats, elapsed))
+
+                if structured:
+                    if response.structured:
+                        troubleshooting_lines.append("[INFO] Structured output: valid JSON")
+                    else:
+                        # "JSON (no schema)" does not constrain decoding, so models
+                        # commonly answer with a ```json fenced block. Unwrapping it
+                        # (only when the contents really parse) is the difference
+                        # between a usable output and one no downstream node can read.
+                        unfenced, stripped = strip_json_code_fence(response_text)
+                        if stripped:
+                            response_text = unfenced
+                            troubleshooting_lines.append(
+                                "[INFO] Structured output: removed a ```json code fence - "
+                                "the response is valid JSON underneath"
+                            )
+                        else:
+                            troubleshooting_lines.append(
+                                "[WARNING] Structured output requested but the response did not parse as JSON"
+                            )
+                            if getattr(response.stats, "stop_reason", None) == "maxPredictedTokensReached":
+                                troubleshooting_lines.append(
+                                    "[HINT] The response hit max_tokens mid-object, so the JSON is "
+                                    "truncated. Raise max_tokens."
+                                )
+                            else:
+                                troubleshooting_lines.append(
+                                    "[HINT] 'JSON (no schema)' asks for JSON but does not constrain "
+                                    "decoding. Use 'JSON (schema below)' with an explicit schema when "
+                                    "a downstream node has to parse the response."
+                                )
+
+                # Split reasoning from the answer.
+                final_response, reasoning = self._split_reasoning(
+                    response_text,
+                    native_reasoning,
+                    plain_content,
+                    reasoning_mode,
+                    custom_open_tag,
+                    custom_close_tag,
+                    troubleshooting_lines,
+                )
 
                 if reasoning:
                     troubleshooting_lines.append(f"[INFO] Extracted reasoning: {len(reasoning)} chars")
@@ -588,8 +801,15 @@ class EALMStudio:
                     except Exception as e:
                         troubleshooting_lines.append(f"[WARNING] Failed to unload LLM: {e}")
 
-                return final_response, reasoning, "\n".join(troubleshooting_lines)
+                if interrupted:
+                    # Report the cancellation to ComfyUI *after* unloading, so a
+                    # cancelled run still frees VRAM.
+                    model_management.throw_exception_if_processing_interrupted()
 
+                return self._output(final_response, reasoning, troubleshooting_lines)
+
+        except _INTERRUPT_EXCEPTIONS:
+            raise  # user cancellation is not a node failure
         except Exception as e:
             error_msg = f"Generation failed: {type(e).__name__}: {e}"
             troubleshooting_lines.append(f"[ERROR] {error_msg}")
@@ -601,13 +821,103 @@ class EALMStudio:
             elif "context" in error_str or "length" in error_str or "2048" in error_str:
                 troubleshooting_lines.append("[HINT] Context length exceeded. In LM Studio, increase the model's context length setting")
                 troubleshooting_lines.append("[HINT] Note: maxTokens limits OUTPUT tokens; contextLength limits TOTAL tokens (input + output)")
+            elif "schema" in error_str or "json" in error_str:
+                troubleshooting_lines.append("[HINT] Check json_schema is a valid JSON Schema object, or set output_format back to 'Text'")
             elif "not found" in error_str or "model" in error_str:
                 troubleshooting_lines.append("[HINT] Check model identifier matches LM Studio exactly")
             elif "image" in error_str or "vision" in error_str or "multi" in error_str:
                 troubleshooting_lines.append("[HINT] This model may not support images or multiple image inputs. Try with a single image or text-only.")
 
             logger.exception("EA_LMStudio generation error")
-            return "", "", "\n".join(troubleshooting_lines)
+            return self._output("", "", troubleshooting_lines)
+
+    def _stream(self, model, chat, gen_config: Dict[str, Any], max_tokens: int):
+        """Run the prediction as a stream.
+
+        Streaming (rather than a blocking ``respond``) buys three things:
+        ComfyUI's cancel button can actually stop a runaway generation, the
+        queue progress bar moves instead of the node looking hung, and LM
+        Studio's own per-fragment ``reasoning_type`` tagging becomes available -
+        which is more reliable than any tag regex when the model has Reasoning
+        Parsing configured in LM Studio.
+
+        Returns ``(result, native_reasoning, plain_content, interrupted)``.
+        """
+        pbar = ProgressBar(max_tokens) if ProgressBar is not None else None
+        interrupted = False
+        reasoning_chunks: List[str] = []
+        content_chunks: List[str] = []
+        tokens_seen = 0
+
+        stream = model.respond_stream(chat, config=gen_config)
+        # Note: the stream must be drained rather than broken out of. Breaking
+        # closes the underlying generator and .result() then raises GeneratorExit;
+        # cancel() ends it promptly with stop_reason "userStopped" instead.
+        for fragment in stream:
+            reasoning_type = getattr(fragment, "reasoning_type", "none")
+            if reasoning_type == "reasoning":
+                reasoning_chunks.append(fragment.content)
+            elif reasoning_type == "none":
+                content_chunks.append(fragment.content)
+            # reasoningStartTag / reasoningEndTag fragments are the delimiters
+            # themselves and belong in neither output.
+
+            tokens_seen += getattr(fragment, "tokens_count", 0) or 0
+            if pbar is not None:
+                pbar.update_absolute(min(tokens_seen, max_tokens), max_tokens)
+
+            if not interrupted and model_management.processing_interrupted():
+                stream.cancel()
+                interrupted = True
+
+        return stream.result(), "".join(reasoning_chunks), "".join(content_chunks), interrupted
+
+    @staticmethod
+    def _split_reasoning(
+        response_text: str,
+        native_reasoning: str,
+        plain_content: str,
+        reasoning_mode: str,
+        custom_open_tag: str,
+        custom_close_tag: str,
+        troubleshooting_lines: List[str],
+    ) -> Tuple[str, str]:
+        """Separate thinking from the final answer.
+
+        LM Studio's own reasoning parser wins when it fired, because it works
+        off the model's configured delimiters rather than a guess. The tag
+        regexes remain the fallback for the (very common) case of a model whose
+        thinking LM Studio was never told how to parse.
+        """
+        if native_reasoning.strip():
+            troubleshooting_lines.append(
+                "[INFO] Reasoning separated by LM Studio's own parser (reasoning_type fragments)"
+            )
+            # plain_content is the same text minus the reasoning; prefer it, but
+            # fall back to the full content if the backend sent no plain fragments.
+            answer = plain_content.strip() or response_text.strip()
+            return answer, native_reasoning.strip()
+
+        if reasoning_mode == "Auto-detect (recommended)":
+            final_response, reasoning, detected_pattern = extract_reasoning_auto(response_text)
+            if detected_pattern:
+                troubleshooting_lines.append(f"[INFO] Auto-detected reasoning format: {detected_pattern}")
+            elif looks_like_leaked_thinking(response_text):
+                # The model thought, but in a tagless plain-text format that
+                # neither LM Studio's parser nor our tag-based extractor caught,
+                # so the reasoning leaked into the response output.
+                troubleshooting_lines.append("[WARNING] Output looks like tagless thinking that leaked into the response (no <think>-style tags found)")
+                troubleshooting_lines.append("[HINT] To fix in LM Studio: set this model's Reasoning Parsing delimiters, or edit its Jinja template to hard-disable thinking ({%- set enable_thinking = false %})")
+                troubleshooting_lines.append("[HINT] Or, if the model uses a consistent marker, switch reasoning_mode to 'Custom tags' and set the open/close tags")
+            else:
+                troubleshooting_lines.append("[INFO] No reasoning tags detected (model may not have used thinking for this query)")
+            return final_response, reasoning
+
+        if reasoning_mode == "Custom tags":
+            return extract_reasoning_custom(response_text, custom_open_tag, custom_close_tag)
+
+        # "Disabled" - no extraction
+        return response_text, ""
 
 
 # Node registration

@@ -1,5 +1,12 @@
-"""Tests for model_fetcher: identifier validation and exclusion matching."""
-from model_fetcher import validate_model_identifier, _is_excluded
+"""Tests for model_fetcher: identifier validation, exclusion and discovery."""
+import model_fetcher
+from model_fetcher import (
+    CUSTOM_MODEL_OPTION,
+    _is_excluded,
+    fetch_models_from_server,
+    get_default_model_choice,
+    validate_model_identifier,
+)
 
 
 # --- validate_model_identifier ------------------------------------------
@@ -63,3 +70,67 @@ def test_not_excluded():
 
 def test_empty_patterns_excludes_nothing():
     assert _is_excluded("anything", []) is False
+
+
+# --- fetch_models_from_server -------------------------------------------
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+def _fake_server(monkeypatch, ids):
+    payload = {"data": [{"id": model_id} for model_id in ids]}
+    monkeypatch.setattr(
+        model_fetcher.requests, "get", lambda *a, **kw: _FakeResponse(payload)
+    )
+
+
+def test_fetch_sorts_and_excludes(monkeypatch):
+    _fake_server(monkeypatch, ["zeta-7b", "text-embedding-small", "Alpha-3b"])
+    models, error, rejected = fetch_models_from_server("http://x", 1.0, ["embedding"])
+    assert error is None
+    assert models == ["Alpha-3b", "zeta-7b"]
+    assert rejected == []
+
+
+def test_unsafe_identifier_is_reported_not_just_dropped(monkeypatch):
+    """LM Studio really does serve ids like "model@?".
+
+    Those fail validation, and before v2.0.0 they vanished from the dropdown
+    with no explanation anywhere.
+    """
+    _fake_server(monkeypatch, ["good-model", "gemma4-31b-balanced-mtp@?"])
+    models, error, rejected = fetch_models_from_server("http://x", 1.0, [])
+    assert error is None
+    assert models == ["good-model"]
+    assert rejected == ["gemma4-31b-balanced-mtp@?"]
+
+
+def test_missing_data_field_is_an_error(monkeypatch):
+    monkeypatch.setattr(
+        model_fetcher.requests, "get", lambda *a, **kw: _FakeResponse({"oops": []})
+    )
+    models, error, rejected = fetch_models_from_server("http://x", 1.0, [])
+    assert models == []
+    assert rejected == []
+    assert "data" in error
+
+
+# --- get_default_model_choice -------------------------------------------
+
+def test_default_is_a_real_model_when_available(monkeypatch):
+    """A fresh node must land on a usable model, not the Custom sentinel."""
+    monkeypatch.setattr(model_fetcher, "_cached_models", ["alpha-3b", "zeta-7b"])
+    assert get_default_model_choice() == "alpha-3b"
+
+
+def test_default_falls_back_to_custom_when_discovery_failed(monkeypatch):
+    monkeypatch.setattr(model_fetcher, "_cached_models", [])
+    assert get_default_model_choice() == CUSTOM_MODEL_OPTION
