@@ -51,6 +51,9 @@ const LEGACY_ORDER = [
     "unload_comfy_models",
     "refresh_models",
 ];
+// v2.0.0 also regrouped the widgets, so the migration below cannot assume the
+// old and new orders line up - it maps every legacy value onto the current
+// widget of the same name, which is order-independent by construction.
 
 const LEGACY_ORDER_WITH_SEED_CONTROL = [
     ...LEGACY_ORDER.slice(0, 7),
@@ -139,6 +142,30 @@ function migrateLegacyWidgetValues(node, widgetValues, defaults) {
     return true;
 }
 
+/**
+ * Grow a node that is stored smaller than its widgets need.
+ *
+ * A workflow stores the node's size, and LiteGraph restores it verbatim - it
+ * does not re-check that the widgets still fit. Any release that adds a widget
+ * therefore leaves every previously saved workflow a row or two too short, and
+ * the overflowing widgets draw outside the node's frame. v2.0.0 has a net two
+ * more widgets than v1.5.x, so this affects every upgraded workflow, not just
+ * an unlucky few. Only ever grows - a deliberately widened node is preserved.
+ */
+function growToFitWidgets(node) {
+    try {
+        const [minWidth, minHeight] = node.computeSize();
+        if (node.size[0] < minWidth || node.size[1] < minHeight) {
+            node.setSize([
+                Math.max(node.size[0], minWidth),
+                Math.max(node.size[1], minHeight),
+            ]);
+        }
+    } catch (err) {
+        console.error("[EA_LMStudio] Could not resize node to fit widgets:", err);
+    }
+}
+
 function getPreviewWidget(node) {
     let widget = node.widgets?.find((w) => w.name === PREVIEW_WIDGET_NAME);
     if (widget) return widget;
@@ -179,6 +206,7 @@ app.registerExtension({
             } catch (err) {
                 console.error("[EA_LMStudio] Legacy workflow migration failed:", err);
             }
+            growToFitWidgets(this);
         };
 
         /*
@@ -207,11 +235,7 @@ app.registerExtension({
             const widget = getPreviewWidget(this);
             widget.value = text;
 
-            const [minWidth, minHeight] = this.computeSize();
-            this.setSize([
-                Math.max(this.size[0], minWidth),
-                Math.max(this.size[1], minHeight),
-            ]);
+            growToFitWidgets(this);
             app.graph.setDirtyCanvas(true, false);
         };
     },

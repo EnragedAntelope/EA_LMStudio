@@ -80,11 +80,21 @@ seed, and no thinking on/off flag.** `seed` exists only in the *load* config.
 The `seed` widget is a ComfyUI cache-buster and nothing more.
 
 **Removing or reordering a widget corrupts saved workflows.** ComfyUI serialises
-`widgets_values` positionally, so a removal shifts every later value. The
-migration in `web/ea_lmstudio.js` keys the old array by the v1.5.x widget-name
-order (two variants, with and without the `control_after_generate` widget
-ComfyUI inserts after an INT named `seed`). Any future removal needs the same
-treatment, and the legacy order table must be kept.
+`widgets_values` positionally, so a removal or a regroup shifts every later
+value. The migration in `web/ea_lmstudio.js` keys the old array by the v1.5.x
+widget-name order (two variants, with and without the `control_after_generate`
+widget ComfyUI inserts after an INT named `seed`) and writes values onto current
+widgets **by name**, which is why v2.0.0 could both drop two widgets and regroup
+the rest. Any future removal or reorder needs the same treatment, and the legacy
+order table must be kept.
+
+**A stored node size is restored verbatim and is not re-checked against the
+widgets.** Adding a widget therefore leaves every previously saved workflow too
+short, and the overflow draws outside the node frame. `growToFitWidgets` in the
+frontend extension grows (never shrinks) the node on configure and after
+execution. Note that a stock ComfyUI `Note` node's textarea overhangs its own
+frame by ~13 units at any size — that is upstream behaviour, not a symptom of
+this, so don't chase it.
 
 **A streamed prediction must be drained, not broken out of.** Breaking the `for`
 loop closes the generator and `stream.result()` then raises `GeneratorExit`.

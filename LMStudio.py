@@ -248,33 +248,12 @@ class EALMStudio:
                     "tooltip": "Re-roll control only. LM Studio has no inference-time seed, so this does NOT make output reproducible - changing it simply tells ComfyUI the node is dirty so it generates again instead of reusing the cached response. Set control_after_generate to 'randomize' for a fresh answer every queue, or 'fixed' to keep the cached one."
                 }),
             },
+            # Widget order below is the on-node layout. Grouped most-used first:
+            # sampling -> output shaping -> reasoning -> vision -> speculative
+            # decoding -> management. Each group's dependent fields follow the
+            # control that switches them on, and every dependent field's tooltip
+            # names that control, so the layout reads top-to-bottom.
             "optional": {
-                # --- Image inputs (for VLMs) ---
-                "image_resize": (IMAGE_RESIZE_OPTIONS, {
-                    "default": "Medium (768px)",
-                    "tooltip": "Resize images before processing. Smaller = faster inference. 'No Resize' keeps original size. Only applies when images are connected."
-                }),
-                "image1": ("IMAGE", {
-                    "tooltip": "First image input for vision models (VLMs). Leave unconnected for text-only inference."
-                }),
-                "image2": ("IMAGE", {
-                    "tooltip": "Second image input for multi-image VLMs. Not all VLMs support multiple images."
-                }),
-                "image3": ("IMAGE", {
-                    "tooltip": "Third image input for multi-image VLMs. Not all VLMs support multiple images."
-                }),
-                "image4": ("IMAGE", {
-                    "tooltip": "Fourth image input for multi-image VLMs. Not all VLMs support multiple images."
-                }),
-                # --- Advanced model options ---
-                "draft_model_selection": (model_choices, {
-                    "default": CUSTOM_MODEL_OPTION,
-                    "tooltip": "Optional draft model for speculative decoding (faster inference). Must share a tokenizer with the main model. Leave on 'Custom' with an empty box to disable. Acceptance stats are reported in troubleshooting."
-                }),
-                "custom_draft_model": ("STRING", {
-                    "default": "",
-                    "tooltip": "Manual draft model identifier. Only used when draft 'Custom' is selected. Leave empty to disable."
-                }),
                 # --- Sampling parameters ---
                 "top_p": ("FLOAT", {
                     "default": 1.0,
@@ -335,6 +314,32 @@ class EALMStudio:
                 "custom_close_tag": ("STRING", {
                     "default": "</think>",
                     "tooltip": "Custom closing tag for reasoning extraction. Only used when reasoning_mode is 'Custom tags'."
+                }),
+                # --- Vision (only relevant when an image input is connected) ---
+                "image_resize": (IMAGE_RESIZE_OPTIONS, {
+                    "default": "Medium (768px)",
+                    "tooltip": "Resize images before processing. Smaller = faster inference. 'No Resize' keeps original size. Only applies when images are connected."
+                }),
+                "image1": ("IMAGE", {
+                    "tooltip": "First image input for vision models (VLMs). Leave unconnected for text-only inference."
+                }),
+                "image2": ("IMAGE", {
+                    "tooltip": "Second image input for multi-image VLMs. Not all VLMs support multiple images."
+                }),
+                "image3": ("IMAGE", {
+                    "tooltip": "Third image input for multi-image VLMs. Not all VLMs support multiple images."
+                }),
+                "image4": ("IMAGE", {
+                    "tooltip": "Fourth image input for multi-image VLMs. Not all VLMs support multiple images."
+                }),
+                # --- Speculative decoding ---
+                "draft_model_selection": (model_choices, {
+                    "default": CUSTOM_MODEL_OPTION,
+                    "tooltip": "Optional draft model for speculative decoding (faster inference). Must share a tokenizer with the main model. Leave on 'Custom' with an empty box to disable. Acceptance stats are reported in troubleshooting."
+                }),
+                "custom_draft_model": ("STRING", {
+                    "default": "",
+                    "tooltip": "Manual draft model identifier. Only used when draft 'Custom' is selected. Leave empty to disable."
                 }),
                 # --- Management ---
                 "unload_llm": ("BOOLEAN", {
