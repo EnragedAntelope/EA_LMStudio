@@ -8,23 +8,29 @@ inside the node.
 
 ## Current state
 
-_Last verified: 2026-08-19_
+_Last verified: 2026-08-24_
 
-- **Status:** v2.0.1, published to the Comfy Registry from `main` on every
+- **Status:** v2.1.0, published to the Comfy Registry from `main` on every
   `pyproject.toml` version change.
-- **Works:** model discovery + refresh (startup fetch and a live API route),
-  text generation, multi-image VLM input, reasoning extraction (LM Studio's own
-  split, with tag-regex fallback), structured JSON output, stop strings,
+- **Works:** model discovery + refresh (background-thread startup fetch, a
+  live refresh API route with a same-origin guard, and a GET status route
+  the frontend uses to warn when LM Studio was unreachable at startup),
+  text generation, multi-image VLM input, reasoning extraction (LM Studio's
+  own split, with tag-regex fallback), structured JSON output, stop strings,
   context-overflow policy, speculative decoding with acceptance stats,
-  cancellable streaming with a queue progress bar, confirmed VRAM unload of the
-  LLM, the draft model and ComfyUI's own models, and migration of workflows
-  saved by 1.x.
+  cancellable streaming that preserves partial output if the stream dies,
+  confirmed VRAM unload of the LLM, the draft model and ComfyUI's own
+  models, silent migration of workflows saved by 1.x, and an optional
+  `api_token` for authenticated servers (config file or env; REST always,
+  SDK generation needs lmstudio>=1.6).
 - **In progress:** nothing outstanding.
-- **Known gaps:** LM Studio's `ttl`, tool/function calling (`.act()`), GBNF
-  grammars, and load-time `seed` (real determinism, but it only applies when the
-  node actually loads the model) are all supported by the SDK and not exposed.
-  There is no automated frontend test — `web/ea_lmstudio.js` is verified by hand
-  in a browser.
+- **Known gaps:** uploaded image/file handles cannot be deleted through the
+  SDK (`FileHandle` has no delete in 1.5.0 - LM Studio retains uploads until
+  its own cleanup); tool/function calling (`.act()`), GBNF grammars and
+  load-time `seed` are supported by the SDK and not exposed; the SDK's load
+  config has no `ttl` field in 1.5.0. There is no automated frontend test —
+  `web/ea_lmstudio.js` is verified by hand in a browser, though the
+  JS/Python `CUSTOM_MODEL_OPTION` sync and route paths ARE unit-tested.
 - **Deep docs:** user-facing behaviour lives in `README.md`; nothing is
   duplicated here.
 
