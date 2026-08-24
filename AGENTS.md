@@ -170,8 +170,12 @@ sampler.
   identical to a success from the runs list. That is not hypothetical — the
   guard's `sed 's/.*"//'` was greedy, parsed every version to an empty string,
   and silently skipped **every** publish from 2.0.0 through 2.1.0, leaving the
-  Registry on 1.5.0 for the whole 2.x line. It now fails loudly instead of
-  parsing to nothing.
+  Registry on 1.5.0 for the whole 2.x line — 2.0.0 and 2.0.1 do not exist there
+  at all. It now fails loudly instead of parsing to nothing.
+- A just-published version lands as `NodeVersionStatusPending` and is **not**
+  `latest_version` until the Registry's own review marks it Active. So check
+  `/nodes/EA_LMStudio/versions` (the full list) rather than `latest_version`
+  right after a publish, or a correct publish looks like a failed one.
 - To publish a version the push path missed, run the workflow manually
   (`gh workflow run "Publish to Comfy registry" --ref main`). A
   `workflow_dispatch` run publishes unconditionally, because in that situation
