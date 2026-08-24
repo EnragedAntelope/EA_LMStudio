@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 
 logger = logging.getLogger("EA_LMStudio")
@@ -63,14 +63,45 @@ class ConfigManager:
         return config
 
     @staticmethod
-    def _sanitize_host(host: Any) -> str:
-        """Accept pasted URLs and bare hosts alike; return a bare hostname."""
+    def _split_host_port(host: Any) -> Tuple[str, Optional[int]]:
+        """Split a pasted host value into a bare hostname and any port in it.
+
+        The whole point of accepting a pasted URL is that people paste what
+        LM Studio shows them, which is "http://192.168.1.50:1234" - scheme AND
+        port. Stripping only the scheme turned that into host "192.168.1.50:1234"
+        and then appended server_port again, producing "...:1234:1234".
+
+        A port found here wins over ``server_port``: it is the more specific and
+        more recently typed of the two. An IPv6 literal is left alone (more than
+        one colon, or no all-digit tail, means it is not a host:port pair).
+        """
         text = str(host or "").strip()
         if "://" in text:
-            # Users routinely paste "http://192.168.1.50" into server_host;
-            # stripping the scheme beats a confusing connection failure.
             text = text.split("://", 1)[1]
-        return text.rstrip("/")
+        # Drop any path/query someone pasted along with the authority.
+        text = text.split("/", 1)[0].split("?", 1)[0]
+
+        port: Optional[int] = None
+        if text.count(":") == 1:
+            candidate_host, _, candidate_port = text.partition(":")
+            if candidate_port.isdigit() and candidate_host:
+                text = candidate_host
+                port = int(candidate_port)
+        return text, port
+
+    @classmethod
+    def _sanitize_host(cls, host: Any) -> str:
+        """Accept pasted URLs and bare hosts alike; return a bare hostname."""
+        return cls._split_host_port(host)[0]
+
+    @classmethod
+    def _resolve_host_port(cls, config: Dict[str, Any]) -> Tuple[str, int]:
+        """Host and port for both URL builders, so they cannot disagree."""
+        host, embedded_port = cls._split_host_port(config.get("server_host", "127.0.0.1"))
+        host = host or "127.0.0.1"
+        if embedded_port is not None:
+            return host, cls._coerce_port(embedded_port)
+        return host, cls._coerce_port(config.get("server_port", 1234))
 
     @staticmethod
     def _coerce_port(port: Any) -> int:
@@ -100,8 +131,7 @@ class ConfigManager:
         """
         if config is None:
             config = self.get_config()
-        host = self._sanitize_host(config.get("server_host", "127.0.0.1")) or "127.0.0.1"
-        port = self._coerce_port(config.get("server_port", 1234))
+        host, port = self._resolve_host_port(config)
         return f"http://{host}:{port}"
 
     def get_server_address(self, config: Optional[Dict[str, Any]] = None) -> str:
@@ -112,8 +142,7 @@ class ConfigManager:
         """
         if config is None:
             config = self.get_config()
-        host = self._sanitize_host(config.get("server_host", "127.0.0.1")) or "127.0.0.1"
-        port = self._coerce_port(config.get("server_port", 1234))
+        host, port = self._resolve_host_port(config)
         return f"{host}:{port}"
 
     def get_api_token(self, config: Optional[Dict[str, Any]] = None) -> str:

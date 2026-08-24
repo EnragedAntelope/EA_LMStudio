@@ -119,3 +119,42 @@ def test_default_config_template_includes_empty_token():
     from lms_config.config_manager import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG.get("api_token") == ""
+
+
+# --- pasted host values carry a port as often as a scheme ---
+#
+# LM Studio shows the user "http://192.168.1.50:1234". Stripping only the
+# scheme left the port in the host and appended server_port again, building
+# the unusable URL "http://192.168.1.50:1234:1234".
+
+def test_pasted_url_with_port_does_not_double_the_port():
+    cfg = {"server_host": "http://192.168.1.50:1234", "server_port": 1234}
+    assert _cm().get_server_url(cfg) == "http://192.168.1.50:1234"
+    assert _cm().get_server_address(cfg) == "192.168.1.50:1234"
+
+
+def test_a_port_in_the_host_wins_over_server_port():
+    """It is the more specific and more recently typed of the two."""
+    cfg = {"server_host": "192.168.1.50:5000", "server_port": 1234}
+    assert _cm().get_server_url(cfg) == "http://192.168.1.50:5000"
+
+
+def test_pasted_url_with_a_path_keeps_only_the_authority():
+    cfg = {"server_host": "http://box:1234/v1/", "server_port": 9999}
+    assert _cm().get_server_url(cfg) == "http://box:1234"
+
+
+def test_ipv6_literal_is_not_mistaken_for_host_port():
+    for host in ("::1", "[::1]", "fe80::1"):
+        cfg = {"server_host": host, "server_port": 1234}
+        assert _cm().get_server_url(cfg) == f"http://{host}:1234"
+
+
+def test_bare_host_still_uses_server_port():
+    cfg = {"server_host": "localhost", "server_port": 8080}
+    assert _cm().get_server_url(cfg) == "http://localhost:8080"
+
+
+def test_junk_port_inside_the_host_is_not_treated_as_a_port():
+    cfg = {"server_host": "host:notaport", "server_port": 1234}
+    assert _cm().get_server_url(cfg) == "http://host:notaport:1234"
