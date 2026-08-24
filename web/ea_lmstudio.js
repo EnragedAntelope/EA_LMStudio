@@ -133,13 +133,8 @@ function migrateLegacyWidgetValues(node, widgetValues, defaults) {
         }
     }
 
-    toast(
-        "info",
-        "EA LM Studio workflow updated",
-        "Loaded a v1 workflow: presence_penalty and enable_thinking were removed " +
-            "(LM Studio never applied them) and the remaining settings were realigned."
-    );
-    return true;
+    // No toast on purpose: the realignment is silent housekeeping, and a
+    // banner on every v1 workflow load was noise users just clicked away.
 }
 
 /**
@@ -181,6 +176,9 @@ function getPreviewWidget(node) {
         widget.inputEl.readOnly = true;
         widget.inputEl.style.opacity = "0.8";
         widget.inputEl.placeholder = "Response appears here after the node runs";
+        // Long responses must not grow the node without bound - cap and scroll.
+        widget.inputEl.style.maxHeight = "400px";
+        widget.inputEl.style.overflowY = "auto";
     }
     // Never let the preview reach the prompt or the saved widget values - it is
     // display only, and a stray extra value is exactly the kind of drift this
@@ -188,6 +186,38 @@ function getPreviewWidget(node) {
     widget.options = { ...(widget.options ?? {}), serialize: false };
     widget.serializeValue = () => undefined;
     return widget;
+}
+
+/**
+ * Push a fresh model list into every EA_LMStudio instance on the graph.
+ *
+ * The combo widgets of all instances share ONE values array (each was filled
+ * from the single /object_info node definition), so the array is mutated IN
+ * PLACE - assigning w.options.values a new array would detach only the
+ * widgets we touch and leave every other instance's dropdown stale. Returns
+ * the selections that no longer exist and were therefore reset.
+ */
+function applyModelChoices(choices) {
+    const dropped = [];
+    let nodes = [];
+    try {
+        nodes = app.graph?.findNodesByType?.(NODE_CLASS) ?? [];
+    } catch {
+        nodes = [];
+    }
+    for (const n of nodes) {
+        for (const widgetName of ["model_selection", "draft_model_selection"]) {
+            const w = n.widgets?.find((ww) => ww.name === widgetName);
+            if (!w || !w.options || !Array.isArray(w.options.values)) continue;
+            w.options.values.length = 0;
+            w.options.values.push(...choices);
+            if (!choices.includes(w.value)) {
+                dropped.push(`#${n.id}: ${String(w.value)}`);
+                w.value = choices[0];
+            }
+        }
+    }
+    return dropped;
 }
 
 app.registerExtension({
@@ -262,20 +292,18 @@ app.registerExtension({
 
                 if (data.success && data.models) {
                     const choices = [CUSTOM_MODEL_OPTION, ...data.models];
-
-                    for (const widgetName of ["model_selection", "draft_model_selection"]) {
-                        const w = node.widgets?.find((ww) => ww.name === widgetName);
-                        if (w && w.options) {
-                            // Replace values array (breaks shared reference intentionally
-                            // so other node instances also get the update)
-                            w.options.values = choices;
-                            if (!choices.includes(w.value)) {
-                                w.value = choices[0];
-                            }
-                        }
-                    }
+                    const dropped = applyModelChoices(choices);
 
                     toast("success", "LM Studio models refreshed", data.message);
+                    if (dropped.length > 0) {
+                        // Selections LM Studio no longer offers cannot be kept;
+                        // say so instead of silently resetting them.
+                        toast(
+                            "warn",
+                            "Stale model selections reset to Custom",
+                            `${dropped.join(", ")} - pick from the refreshed list.`
+                        );
+                    }
                 } else {
                     toast(
                         "warn",
@@ -292,5 +320,28 @@ app.registerExtension({
 
             if (originalCallback) originalCallback.call(this, false);
         };
+    },
+
+    /*
+     * One check per page load: if the startup model fetch failed (LM Studio
+     * not running yet, wrong port...), say so now instead of leaving the user
+     * a silent "-- Custom --" dropdown to decode. A later successful refresh
+     * clears the stored error, so this fires only while the problem stands.
+     */
+    async setup() {
+        try {
+            const resp = await api.fetchApi("/ea_lmstudio/models");
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (!data.success && data.error) {
+                toast(
+                    "warn",
+                    "LM Studio unreachable at startup",
+                    `${data.error} The model dropdown stays empty until LM Studio is reachable - then toggle 'Refresh models'.`
+                );
+            }
+        } catch (err) {
+            console.debug("[EA_LMStudio] Startup model-status check skipped:", err);
+        }
     },
 });
