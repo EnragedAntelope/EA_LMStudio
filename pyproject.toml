@@ -1,7 +1,7 @@
 [project]
 name = "EA_LMStudio"
 description = "Fully-featured LM Studio integration for ComfyUI: model discovery, vision, reasoning extraction, and full sampler control."
-version = "2.0.1"
+version = "2.1.0"
 license = {file = "LICENSE"}
 # The lmstudio SDK itself declares Requires-Python >=3.10, so 3.9 was never
 # actually installable regardless of what this said.

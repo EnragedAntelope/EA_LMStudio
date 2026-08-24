@@ -5,7 +5,7 @@ Queries LM Studio server for available models via /v1/models endpoint.
 import re
 import requests
 import logging
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 logger = logging.getLogger("EA_LMStudio")
@@ -18,6 +18,40 @@ _last_fetch_success: bool = False
 # node can say *why* a model is missing from the dropdown instead of it just not
 # being there (LM Studio does hand out ids like "some-model@?" in practice).
 _last_rejected_models: List[str] = []
+
+# One connection pool shared by the startup fetch, the refresh route and
+# queued runs, instead of a fresh TCP handshake per requests.get call.
+_session = requests.Session()
+
+
+def auth_headers(api_token: Optional[str]) -> Dict[str, str]:
+    """Authorization header for LM Studio servers with token auth enabled.
+
+    Empty dict when no token is configured, so callers can pass this
+    straight through as ``headers=``.
+    """
+    token = str(api_token or "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def origin_matches_host(origin: Optional[str], host: Optional[str]) -> bool:
+    """Whether a request's Origin is consistent with its Host header.
+
+    Browsers attach an Origin header to cross-site POSTs, so a malicious web
+    page making a CSRF attempt against a locally-running ComfyUI carries an
+    Origin that cannot match the server's own Host. Requests without an
+    Origin (curl, server-to-server calls) are allowed - ComfyUI is a local
+    tool and its other custom-node routes behave the same way.
+
+    Pure function so it stays unit-testable without a running server.
+    """
+    if not origin:
+        return True
+    if not host:
+        return False
+    # Origin is always "<scheme>://<host>[:<port>]"; compare the authority.
+    return origin.split("://", 1)[-1] == host
+
 
 # Constants
 CUSTOM_MODEL_OPTION = "-- Custom (enter below) --"
@@ -73,6 +107,7 @@ def fetch_models_from_server(
     server_url: str,
     timeout: float = 5.0,
     excluded_patterns: Optional[List[str]] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> tuple[List[str], Optional[str], List[str]]:
     """
     Fetch available models from LM Studio server.
@@ -82,6 +117,7 @@ def fetch_models_from_server(
         timeout: Request timeout in seconds
         excluded_patterns: List of substrings to exclude from model list.
             If None, uses default ["embedding"]. Pass an empty list to include all models.
+        headers: Optional request headers (e.g. Authorization for token auth).
 
     Returns:
         Tuple of (model_list, error_message, rejected_models)
@@ -104,7 +140,7 @@ def fetch_models_from_server(
         # unreachable-but-not-refusing host (firewalled/asleep machine) can't
         # block ComfyUI startup for the full configured read timeout.
         connect_timeout = min(timeout, 3.05)
-        response = requests.get(endpoint, timeout=(connect_timeout, timeout))
+        response = _session.get(endpoint, timeout=(connect_timeout, timeout), headers=headers)
         response.raise_for_status()
 
         data = response.json()
@@ -169,8 +205,6 @@ def get_model_choices() -> List[str]:
     Returns:
         List with Custom option first, followed by cached models.
     """
-    global _cached_models
-
     choices = [CUSTOM_MODEL_OPTION]
 
     if _cached_models:
@@ -194,6 +228,7 @@ def refresh_model_cache(
     server_url: str,
     timeout: float = 5.0,
     excluded_patterns: Optional[List[str]] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> tuple[bool, str]:
     """
     Refresh the cached model list from server.
@@ -203,13 +238,16 @@ def refresh_model_cache(
         timeout: Request timeout in seconds
         excluded_patterns: List of substrings to exclude from model list.
             If None, uses default ["embedding"]. Pass an empty list to include all models.
+        headers: Optional request headers (e.g. Authorization for token auth).
 
     Returns:
         Tuple of (success, message)
     """
     global _cached_models, _last_fetch_error, _last_fetch_success, _last_rejected_models
 
-    models, error, rejected = fetch_models_from_server(server_url, timeout, excluded_patterns)
+    models, error, rejected = fetch_models_from_server(
+        server_url, timeout, excluded_patterns, headers=headers
+    )
 
     if error:
         _last_fetch_error = error
@@ -232,15 +270,23 @@ def refresh_model_cache(
         )
 
 
-def initialize_model_cache(server_url: str, timeout: float = 5.0, excluded_patterns=None) -> None:
+def initialize_model_cache(
+    server_url: str,
+    timeout: float = 5.0,
+    excluded_patterns=None,
+    headers: Optional[Dict[str, str]] = None,
+) -> None:
     """
     Initialize model cache at startup. Silent failure - just logs warning.
 
     Args:
         server_url: Base URL of LM Studio server
         timeout: Request timeout in seconds
+        headers: Optional request headers (e.g. Authorization for token auth).
     """
-    success, message = refresh_model_cache(server_url, timeout, excluded_patterns=excluded_patterns)
+    success, message = refresh_model_cache(
+        server_url, timeout, excluded_patterns=excluded_patterns, headers=headers
+    )
     if not success:
         logger.warning(f"EA_LMStudio startup: {message}")
         logger.warning("EA_LMStudio: Models will need to be entered manually or refreshed later")

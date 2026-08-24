@@ -8,8 +8,10 @@ on:
     paths:
       - "pyproject.toml"
 
+# Least privilege: publishing authenticates via the REGISTRY_ACCESS_TOKEN
+# secret, so the workflow itself needs no write access.
 permissions:
-  issues: write
+  contents: read
 
 jobs:
   publish-node:

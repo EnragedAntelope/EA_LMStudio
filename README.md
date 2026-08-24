@@ -16,7 +16,7 @@ _Vision: captioning an image with a VLM into schema-constrained JSON that downst
 - **Vision Support** - Up to 4 image inputs with smart auto-resize to prevent OOM
 - **Reasoning Extraction** - Uses LM Studio's own reasoning split when the model has Reasoning Parsing configured, and falls back to tag detection (DeepSeek R1, Qwen3, QwQ, GLM, GPT-OSS "harmony" channels, and similar) when it does not
 - **Structured JSON Output** - Constrain decoding to a JSON Schema so downstream nodes can parse the response
-- **Cancellable & Streamed** - ComfyUI's cancel button really stops a runaway generation, and the queue progress bar tracks tokens instead of the node looking frozen
+- **Cancellable & Streamed** - ComfyUI's cancel button really stops a runaway generation, and the queue progress bar tracks tokens instead of the node looking frozen. If the connection to LM Studio dies mid-generation, everything received so far is returned instead of discarded
 - **In-Node Response Preview** - The generated text appears inside the node; no extra preview node required
 - **Advanced Controls** - Temperature, top-k/p, min-p, repetition penalty, stop strings, context-overflow policy, speculative decoding
 - **Honest Diagnostics** - Every parameter is checked against the config LM Studio reports back, so a setting that silently does nothing is reported instead of hidden
@@ -56,7 +56,7 @@ Ready-made workflows live in [`example_workflows/`](example_workflows) — drag 
 
 ## Tips
 
-- **Models not showing?** LM Studio must be running before ComfyUI starts. Toggle the `refresh_models` checkbox to instantly re-fetch and update the dropdowns.
+- **Models not showing?** LM Studio must be running before ComfyUI starts - if it was unreachable at startup, the node warns you once when the page loads. Toggle the `refresh_models` checkbox to instantly re-fetch and update every EA LM Studio node's dropdowns.
 - **Context errors?** Increase context length in LM Studio settings (not max_tokens). Set `context_overflow` to `Stop at limit (error)` if a silently shortened prompt would be worse than no answer.
 - **VLM issues?** Try a smaller image resize option or a single image if multi-image fails.
 - **Force thinking mode:** Add `/think` to the prompt (Qwen3 family) or "Think step by step" for others. LM Studio's API has no thinking on/off flag — see below.
@@ -64,6 +64,8 @@ Ready-made workflows live in [`example_workflows/`](example_workflows) — drag 
 - **Reducing repetition:** Raise `repeat_penalty` (1.1-1.3) and/or use `min_p` (0.05-0.1) as a modern alternative to `top_p`. LM Studio has no presence or frequency penalty.
 - **Guaranteed parseable output:** Set `output_format` to `JSON (schema below)` and supply a schema. `JSON (no schema)` only *asks* for JSON — it does not constrain decoding, and many models answer with a ```` ```json ```` fenced block (the node unwraps that automatically when the contents are valid JSON).
 - **Speculative decoding not helping?** The troubleshooting output reports the draft-token acceptance rate. Below ~30% the draft model is usually costing more than it saves.
+- **Wiring `prompt` from another node** (prompt-enhancer chains): right-click the widget and choose **Convert Widget to Input** - ComfyUI turns any widget into a connectable socket, no special node support needed.
+- **Generation ended early / timed out?** If LM Studio sends no data for ~60s the SDK aborts with a timeout. Usually the model is still loading or the server is busy - retry. Partial output received before the failure is returned rather than thrown away.
 
 ## Custom Server
 
@@ -74,6 +76,20 @@ Edit `lms_config/user_config.json`:
     "server_port": 1234
 }
 ```
+
+### API Token (authenticated servers)
+
+LM Studio 0.4.0+ can require an API token. Because workflows are shared as plain-text JSON, the token deliberately has **no node widget** - it would leak with every posted `.json`. Instead, set it once per machine:
+
+```json
+{
+    "api_token": "your-token-here"
+}
+```
+
+or export the `LM_API_TOKEN` environment variable (the `lmstudio` package's own convention; a value in `user_config.json` wins). Model discovery always honours it. Generation needs `lmstudio >= 1.6`, which is still a prerelease — a plain `pip install lmstudio` gets 1.5.0, where the SDK cannot send a token at all, and the node logs a clear warning once instead of failing every run. Install `lmstudio>=1.6.0b1` explicitly if you need authenticated generation.
+
+> **Note on transport:** LM Studio's server speaks plain HTTP - it has no built-in TLS (as of 0.4.x). For tokens over any network that is not localhost-only, front LM Studio with a TLS reverse proxy (Caddy/nginx) and point `server_host` at it.
 
 ## Model Exclusion Patterns
 
@@ -107,7 +123,7 @@ The response also renders inside the node itself, so a preview node is optional.
 
 **Version 2.0.0 removed the `presence_penalty` and `enable_thinking` widgets.** Neither ever did anything: the `lmstudio` SDK silently discards prediction-config keys it does not recognise, and LM Studio has no presence penalty and no thinking on/off flag. They were dropped before the request ever left your machine.
 
-You do not need to rebuild anything. When a workflow saved by 1.x is loaded, the node detects the old layout and realigns every remaining setting to the right widget, showing a toast when it does. Without that, removing two mid-list widgets would have shifted every later value by one or two slots.
+You do not need to rebuild anything. When a workflow saved by 1.x is loaded, the node detects the old layout and silently realigns every remaining setting to the right widget. Without that, removing two mid-list widgets would have shifted every later value by one or two slots.
 
 If you relied on `enable_thinking`, the equivalents that genuinely work are configuring **Reasoning Parsing** for the model in LM Studio, editing the model's Jinja template (`{%- set enable_thinking = false %}`), or a `/think` / `/no_think` marker in the prompt for Qwen3-family models.
 

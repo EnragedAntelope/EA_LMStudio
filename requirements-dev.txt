@@ -1,3 +1,7 @@
 # Development / test dependencies (not required at runtime).
 -r requirements.txt
 pytest>=7.0.0
+# Undefined-name gate. A deleted `from tempfile import NamedTemporaryFile`
+# once shipped on a branch whose whole test suite was green, because no test
+# reached the image-upload path. pyflakes catches that class in one pass.
+pyflakes>=3.0.0
