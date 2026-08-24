@@ -140,3 +140,14 @@ def test_leaked_thinking_only_checks_head():
 
 def test_leaked_thinking_empty():
     assert not looks_like_leaked_thinking("")
+
+
+def test_plain_english_mentioning_response_is_not_split():
+    """Regression guard: the missing-open-tag fallback must key off real
+    closing tags only. An audit once claimed a " response" substring could
+    split ordinary sentences - it cannot, and this pins that."""
+    text = "I will provide a response now. The answer is 42."
+    resp, reasoning, pattern = extract_reasoning_auto(text)
+    assert resp == text
+    assert reasoning == ""
+    assert pattern is None

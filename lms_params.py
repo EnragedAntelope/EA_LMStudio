@@ -41,6 +41,10 @@ OUTPUT_FORMAT_OPTIONS = [
     "JSON (schema below)",
 ]
 
+# stop_reason the server reports when generation hit maxTokens. Referenced by
+# name in the structured-output hint; must match the server's spelling exactly.
+MAX_TOKENS_STOP_REASON = "maxPredictedTokensReached"
+
 # Escape sequences honoured inside a stop string, so a user can stop on a
 # newline (which they cannot type into a single line of the widget).
 _STOP_STRING_ESCAPES = (

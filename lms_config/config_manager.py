@@ -4,6 +4,10 @@ Handles server settings with gitignore-protected user config.
 """
 import json
 import logging
+import os
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -15,6 +19,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "server_port": 1234,
     "timeout_seconds": 5,
     "excluded_model_patterns": ["embedding"],
+    # Never surfaced as a node widget: workflow JSON is plaintext and gets
+    # shared, so a secret there would leak with every posted .json file.
+    "api_token": "",
 }
 
 
@@ -33,7 +40,13 @@ class ConfigManager:
         Returns:
             Dict containing merged configuration values.
         """
-        config = DEFAULT_CONFIG.copy()
+        # Copy lists as well as the dict itself: a shallow .copy() aliases
+        # excluded_model_patterns across callers, so one mutation would leak
+        # into every later get_config() result.
+        config = {
+            key: list(value) if isinstance(value, list) else value
+            for key, value in DEFAULT_CONFIG.items()
+        }
 
         # Load user overrides if they exist
         if self.user_config_path.exists():
@@ -52,6 +65,31 @@ class ConfigManager:
 
         return config
 
+    @staticmethod
+    def _sanitize_host(host: Any) -> str:
+        """Accept pasted URLs and bare hosts alike; return a bare hostname."""
+        text = str(host or "").strip()
+        if "://" in text:
+            # Users routinely paste "http://192.168.1.50" into server_host;
+            # stripping the scheme beats a confusing connection failure.
+            text = text.split("://", 1)[1]
+        return text.rstrip("/")
+
+    @staticmethod
+    def _coerce_port(port: Any) -> int:
+        """Coerce the configured port, falling back to 1234 with a warning."""
+        try:
+            value = int(port)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"server_port in user_config.json is not a number ({port!r}). Using 1234."
+            )
+            return 1234
+        if not 1 <= value <= 65535:
+            logger.warning(f"server_port {value} is out of range. Using 1234.")
+            return 1234
+        return value
+
     def get_server_url(self, config: Optional[Dict[str, Any]] = None) -> str:
         """
         Get the full server base URL for API calls.
@@ -65,19 +103,58 @@ class ConfigManager:
         """
         if config is None:
             config = self.get_config()
-        host = config.get("server_host", "127.0.0.1")
-        port = config.get("server_port", 1234)
+        host = self._sanitize_host(config.get("server_host", "127.0.0.1")) or "127.0.0.1"
+        port = self._coerce_port(config.get("server_port", 1234))
         return f"http://{host}:{port}"
 
-    def get_timeout(self, config: Optional[Dict[str, Any]] = None) -> float:
-        """Get configured timeout in seconds.
+    def get_server_address(self, config: Optional[Dict[str, Any]] = None) -> str:
+        """Host:port for the lmstudio SDK client - the single source of truth.
 
         Args:
             config: Optional pre-loaded config dict to avoid a re-read.
         """
         if config is None:
             config = self.get_config()
-        return float(config.get("timeout_seconds", 5))
+        host = self._sanitize_host(config.get("server_host", "127.0.0.1")) or "127.0.0.1"
+        port = self._coerce_port(config.get("server_port", 1234))
+        return f"{host}:{port}"
+
+    def get_api_token(self, config: Optional[Dict[str, Any]] = None) -> str:
+        """API token for LM Studio servers that require authentication.
+
+        Sources, in order: ``api_token`` in user_config.json, then the
+        ``LM_API_TOKEN`` environment variable (the SDK's own convention).
+        There is deliberately no node widget for this: workflows are shared
+        as plaintext JSON, so the token only ever lives in this gitignored
+        file or the environment.
+        """
+        if config is None:
+            config = self.get_config()
+        token = str(config.get("api_token") or "").strip()
+        if token:
+            return token
+        return os.environ.get("LM_API_TOKEN", "").strip()
+
+    def get_timeout(self, config: Optional[Dict[str, Any]] = None) -> float:
+        """Get configured timeout in seconds, tolerating junk values.
+
+        A non-numeric timeout_seconds used to raise ValueError at module
+        import (the startup fetch reads it), failing the entire node pack
+        load with a traceback. Warn and fall back instead.
+
+        Args:
+            config: Optional pre-loaded config dict to avoid a re-read.
+        """
+        if config is None:
+            config = self.get_config()
+        raw = config.get("timeout_seconds", 5)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"timeout_seconds in user_config.json is not a number ({raw!r}). Using default 5."
+            )
+            return 5.0
 
     def get_excluded_patterns(self, config: Optional[Dict[str, Any]] = None) -> List[str]:
         """Get model exclusion patterns from config.
@@ -121,6 +198,7 @@ class ConfigManager:
                 "server_port": 1234,
                 "timeout_seconds": 5,
                 "excluded_model_patterns": ["embedding"],
+                "api_token": "",
             }
             try:
                 with open(self.user_config_path, 'w', encoding='utf-8') as f:

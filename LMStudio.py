@@ -4,9 +4,10 @@ Provides text generation using local LLM/VLM models via LM Studio server.
 """
 import logging
 from typing import Any, Dict, List, Optional, Tuple
+import inspect
 import os
+import threading
 import time
-from tempfile import NamedTemporaryFile
 from PIL import Image
 
 # LM Studio SDK
@@ -23,6 +24,7 @@ except Exception:  # pragma: no cover - ComfyUI always provides this at runtime
 # Local imports
 from .lms_config.config_manager import ConfigManager
 from .model_fetcher import (
+    auth_headers,
     get_model_choices,
     get_default_model_choice,
     refresh_model_cache,
@@ -42,6 +44,7 @@ from .lms_reasoning import (
 from .lms_params import (
     CONTEXT_OVERFLOW_OPTIONS,
     CONTEXT_OVERFLOW_POLICIES,
+    MAX_TOKENS_STOP_REASON,
     OUTPUT_FORMAT_OPTIONS,
     build_structured_setting,
     missing_config_keys,
@@ -107,13 +110,27 @@ _config_manager = ConfigManager()
 _config_manager.create_user_config_template()
 _config_manager.ensure_default_config_exists()
 
-# Attempt to fetch models at startup (single config read)
+# Fetch models at startup in a daemon thread.
+#
+# The fetch is a blocking HTTP call; done inline at import it taxed every
+# ComfyUI start by up to ~3s connect cap + read timeout whenever LM Studio
+# was unreachable-but-not-refusing. A daemon thread keeps startup instant;
+# failure is recorded in model_fetcher and surfaced through the
+# /ea_lmstudio/models status route and per-run troubleshooting output.
 _startup_config = _config_manager.get_config()
-initialize_model_cache(
-    _config_manager.get_server_url(_startup_config),
-    _config_manager.get_timeout(_startup_config),
-    excluded_patterns=_config_manager.get_excluded_patterns(_startup_config),
-)
+threading.Thread(
+    target=initialize_model_cache,
+    args=(
+        _config_manager.get_server_url(_startup_config),
+        _config_manager.get_timeout(_startup_config),
+    ),
+    kwargs={
+        "excluded_patterns": _config_manager.get_excluded_patterns(_startup_config),
+        "headers": auth_headers(_config_manager.get_api_token(_startup_config)),
+    },
+    name="EA_LMStudio-startup-model-fetch",
+    daemon=True,
+).start()
 
 # ComfyUI's cancel button sets an interrupt flag. We poll it while streaming so a
 # runaway generation can actually be stopped, then re-raise so the queue reports
@@ -173,6 +190,36 @@ def _summarize_config(gen_config: Dict[str, Any]) -> str:
         parts.append(f"{key}={text}")
     return ", ".join(parts)
 
+
+# Warn once, not once per run, when a token is set but the SDK lacks support.
+_api_token_unsupported_warned = False
+
+
+def _create_client(server_address: str, api_token: str):
+    """Build an lmstudio SDK client, attaching the API token when supported.
+
+    Token authentication needs an SDK new enough to accept an ``api_token"
+    argument on Client (1.6.0b1 onwards). Older SDKs raise TypeError just by
+    receiving it, so support is detected from the signature and the missing
+    capability warns once instead of failing every run.
+    """
+    global _api_token_unsupported_warned
+    if not api_token:
+        return lms.Client(server_address)
+    try:
+        supports_token = "api_token" in inspect.signature(lms.Client).parameters
+    except (TypeError, ValueError):  # pragma: no cover - exotic Client stand-ins
+        supports_token = False
+    if supports_token:
+        return lms.Client(server_address, api_token=api_token)
+    if not _api_token_unsupported_warned:
+        _api_token_unsupported_warned = True
+        logger.warning(
+            "EA_LMStudio: api_token is configured but the installed lmstudio SDK "
+            "cannot send it (needs lmstudio>=1.6). Model discovery still sends "
+            "the token over REST; upgrade the package for authenticated generation."
+        )
+    return lms.Client(server_address)
 
 class EALMStudio:
     """
@@ -365,6 +412,11 @@ class EALMStudio:
         Returns float("nan") (not its string form): NaN != NaN, so ComfyUI
         sees a changed value every run. As a string, "nan" == "nan" and the
         cached result would be reused.
+
+        The browser extension resets the toggle right after fetching, so UI
+        users never queue with this True; the guarantee exists for headless,
+        API-driven workflows that POST refresh_models=true - this is what
+        makes such a refresh-bearing run actually execute.
         """
         if kwargs.get("refresh_models", False):
             return float("nan")  # Always different
@@ -443,8 +495,9 @@ class EALMStudio:
                 if temp_path:
                     try:
                         os.unlink(temp_path)
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        # Best effort only; Windows can hold the file briefly.
+                        logger.debug(f"Could not remove temp image {temp_path}: {e}")
         return handles
 
     @staticmethod
@@ -488,7 +541,7 @@ class EALMStudio:
         if drafted:
             accepted = value("accepted_draft_tokens_count") or 0
             rejected = value("rejected_draft_tokens_count") or 0
-            rate = (accepted / drafted * 100.0) if drafted else 0.0
+            rate = accepted / drafted * 100.0
             draft_key = value("used_draft_model_key")
             if draft_key:
                 lines.append(f"[INFO] Draft model used: {draft_key}")
@@ -505,6 +558,124 @@ class EALMStudio:
         lines.append(f"[INFO] Stop reason: {value('stop_reason', 'unknown')}")
         lines.append(f"[INFO] Total time: {elapsed:.2f}s")
         return lines
+
+    @staticmethod
+    def _error_hints(error_str: str) -> List[str]:
+        """Actionable hints keyed off the error text (pure, unit-tested)."""
+        hints: List[str] = []
+        if "timeout" in error_str or "timed out" in error_str:
+            hints.append(
+                "[HINT] LM Studio sent no data within the sync timeout (~60s idle). "
+                "The model may still be loading or the server busy - retry, or check LM Studio's logs."
+            )
+        if "connection" in error_str or "refused" in error_str:
+            hints.append("[HINT] Ensure LM Studio is running with server enabled")
+        elif "context" in error_str or "length" in error_str or "2048" in error_str:
+            hints.append("[HINT] Context length exceeded. In LM Studio, increase the model's context length setting")
+            hints.append("[HINT] Note: maxTokens limits OUTPUT tokens; contextLength limits TOTAL tokens (input + output)")
+        elif "schema" in error_str or "json" in error_str:
+            hints.append("[HINT] Check json_schema is a valid JSON Schema object, or set output_format back to 'Text'")
+        elif "not found" in error_str or "model" in error_str:
+            hints.append("[HINT] Check model identifier matches LM Studio exactly")
+        elif "image" in error_str or "vision" in error_str or "multi" in error_str:
+            hints.append("[HINT] This model may not support images or multiple image inputs. Try with a single image or text-only.")
+        return hints
+
+    @staticmethod
+    def _finalize_response(
+        response,
+        response_text: str,
+        gen_config: Dict[str, Any],
+        elapsed: float,
+        structured: Optional[Dict[str, Any]],
+        native_reasoning: str,
+        plain_content: str,
+        reasoning_mode: str,
+        custom_open_tag: str,
+        custom_close_tag: str,
+        troubleshooting_lines: List[str],
+    ) -> Tuple[str, str]:
+        """Post-generation processing: verify config, log stats, split reasoning.
+
+        Every step here runs AFTER the text is safely in hand, and any
+        exception degrades to returning the raw model output instead of
+        discarding it (a bug class that has bitten before: a formatting error
+        in this block once threw away a successful generation).
+        """
+        try:
+            # Verify the server actually applied what we asked for. The SDK
+            # drops unknown keys without a word, so this is the only way a
+            # parameter that quietly does nothing becomes visible.
+            try:
+                applied = response.prediction_config.to_dict()
+            except Exception:  # pragma: no cover - defensive
+                applied = {}
+            if applied:
+                ignored = [
+                    key for key in missing_config_keys(gen_config, applied)
+                    if key not in _UNVERIFIABLE_CONFIG_KEYS
+                ]
+                if ignored:
+                    troubleshooting_lines.append(
+                        f"[WARNING] LM Studio did not apply: {', '.join(ignored)} - "
+                        "your installed lmstudio package or LM Studio build may be too old for these"
+                    )
+
+            troubleshooting_lines.extend(EALMStudio._stats_lines(response.stats, elapsed))
+
+            if structured:
+                if response.structured:
+                    troubleshooting_lines.append("[INFO] Structured output: valid JSON")
+                else:
+                    # "JSON (no schema)" does not constrain decoding, so models
+                    # commonly answer with a ```json fenced block. Unwrapping it
+                    # (only when the contents really parse) is the difference
+                    # between a usable output and one no downstream node can read.
+                    unfenced, stripped = strip_json_code_fence(response_text)
+                    if stripped:
+                        response_text = unfenced
+                        troubleshooting_lines.append(
+                            "[INFO] Structured output: removed a ```json code fence - "
+                            "the response is valid JSON underneath"
+                        )
+                    else:
+                        troubleshooting_lines.append(
+                            "[WARNING] Structured output requested but the response did not parse as JSON"
+                        )
+                        if getattr(response.stats, "stop_reason", None) == MAX_TOKENS_STOP_REASON:
+                            troubleshooting_lines.append(
+                                "[HINT] The response hit max_tokens mid-object, so the JSON is "
+                                "truncated. Raise max_tokens."
+                            )
+                        else:
+                            troubleshooting_lines.append(
+                                "[HINT] 'JSON (no schema)' asks for JSON but does not constrain "
+                                "decoding. Use 'JSON (schema below)' with an explicit schema when "
+                                "a downstream node has to parse the response."
+                            )
+
+            # Split reasoning from the answer.
+            final_response, reasoning = EALMStudio._split_reasoning(
+                response_text,
+                native_reasoning,
+                plain_content,
+                reasoning_mode,
+                custom_open_tag,
+                custom_close_tag,
+                troubleshooting_lines,
+            )
+
+            if reasoning:
+                troubleshooting_lines.append(f"[INFO] Extracted reasoning: {len(reasoning)} chars")
+                troubleshooting_lines.append(f"[INFO] Clean response: {len(final_response)} chars")
+            return final_response, reasoning
+        except Exception as e:
+            troubleshooting_lines.append(
+                f"[WARNING] Response post-processing failed ({type(e).__name__}: {e}) - "
+                "returning the raw model output"
+            )
+            logger.exception("EA_LMStudio post-processing error")
+            return response_text, ""
 
     # ------------------------------------------------------------------
     # Execution
@@ -555,13 +726,19 @@ class EALMStudio:
         server_url = _config_manager.get_server_url(config)
         timeout = _config_manager.get_timeout(config)
         excluded_patterns = _config_manager.get_excluded_patterns(config)
+        api_token = _config_manager.get_api_token(config)
 
         troubleshooting_lines.append(f"[INFO] Server: {server_url}")
         troubleshooting_lines.append(f"[INFO] Cached models: {get_cached_model_count()}")
 
         # Handle model refresh request
         if refresh_models:
-            success, message = refresh_model_cache(server_url, timeout, excluded_patterns=excluded_patterns)
+            success, message = refresh_model_cache(
+                server_url,
+                timeout,
+                excluded_patterns=excluded_patterns,
+                headers=auth_headers(api_token),
+            )
             if success:
                 troubleshooting_lines.append(f"[INFO] Model refresh: {message}")
             else:
@@ -644,10 +821,15 @@ class EALMStudio:
                 pil_img = convert_image_to_pil(img_tensor, RESIZE_DIMENSIONS.get(image_resize))
                 if pil_img:
                     pil_images.append(pil_img)
-                    if image_resize != "No Resize":
-                        troubleshooting_lines.append(f"[INFO] Image {idx}: {pil_img.size[0]}x{pil_img.size[1]} (resized)")
-                    else:
-                        troubleshooting_lines.append(f"[INFO] Image {idx}: {pil_img.size[0]}x{pil_img.size[1]}")
+                    # Only claim "(resized)" when dimensions actually changed -
+                    # images already under the target pass through untouched.
+                    orig_w = int(img_tensor.shape[2])
+                    orig_h = int(img_tensor.shape[1])
+                    dims_changed = (pil_img.size[0], pil_img.size[1]) != (orig_w, orig_h)
+                    note = " (resized)" if dims_changed and image_resize != "No Resize" else ""
+                    troubleshooting_lines.append(
+                        f"[INFO] Image {idx}: {pil_img.size[0]}x{pil_img.size[1]}{note}"
+                    )
                 else:
                     troubleshooting_lines.append(f"[WARNING] Failed to process image {idx}")
 
@@ -664,13 +846,12 @@ class EALMStudio:
         try:
             troubleshooting_lines.append("[INFO] Connecting to LM Studio...")
 
-            # Parse host and port from config
-            host = config.get("server_host", "127.0.0.1")
-            port = config.get("server_port", 1234)
-            server_address = f"{host}:{port}"
+            # Host:port from ConfigManager - the single source of truth.
+            server_address = _config_manager.get_server_address(config)
 
-            # Create LM Studio client
-            with lms.Client(server_address) as client:
+            # Create LM Studio client (attaches the API token when configured
+            # and the installed SDK supports it)
+            with _create_client(server_address, api_token) as client:
                 try:
                     # Load or get model
                     model = client.llm.model(model_identifier)
@@ -725,88 +906,64 @@ class EALMStudio:
                     troubleshooting_lines.append("[INFO] Generating...")
 
                     start_time = time.time()
-                    response, native_reasoning, plain_content, interrupted = self._stream(
-                        model, chat, gen_config, max_tokens
-                    )
+                    (
+                        response,
+                        native_reasoning,
+                        plain_content,
+                        interrupted,
+                        stream_error,
+                    ) = self._stream(model, chat, gen_config, max_tokens)
                     elapsed = time.time() - start_time
 
                     if interrupted:
+                        # The queue reports a cancellation; nothing is returned
+                        # to downstream nodes either way, so say exactly that.
                         troubleshooting_lines.append(
-                            "[WARNING] Cancelled from ComfyUI - partial output returned"
+                            "[WARNING] Cancelled from ComfyUI - generation stopped early"
+                        )
+                    elif stream_error:
+                        troubleshooting_lines.append(
+                            f"[ERROR] Generation ended early: {stream_error}"
                         )
                     else:
                         troubleshooting_lines.append("[INFO] Generation complete")
 
-                    response_text = response.content
-                    troubleshooting_lines.append(f"[INFO] Raw response length: {len(response_text)} chars")
-
-                    # Verify the server actually applied what we asked for. The SDK
-                    # drops unknown keys without a word, so this is the only way a
-                    # parameter that quietly does nothing becomes visible.
-                    try:
-                        applied = response.prediction_config.to_dict()
-                    except Exception:  # pragma: no cover - defensive
-                        applied = {}
-                    if applied:
-                        ignored = [
-                            key for key in missing_config_keys(gen_config, applied)
-                            if key not in _UNVERIFIABLE_CONFIG_KEYS
-                        ]
-                        if ignored:
-                            troubleshooting_lines.append(
-                                f"[WARNING] LM Studio did not apply: {', '.join(ignored)} - "
-                                "your installed lmstudio package or LM Studio build may be too old for these"
-                            )
-
-                    troubleshooting_lines.extend(self._stats_lines(response.stats, elapsed))
-
-                    if structured:
-                        if response.structured:
-                            troubleshooting_lines.append("[INFO] Structured output: valid JSON")
-                        else:
-                            # "JSON (no schema)" does not constrain decoding, so models
-                            # commonly answer with a ```json fenced block. Unwrapping it
-                            # (only when the contents really parse) is the difference
-                            # between a usable output and one no downstream node can read.
-                            unfenced, stripped = strip_json_code_fence(response_text)
-                            if stripped:
-                                response_text = unfenced
-                                troubleshooting_lines.append(
-                                    "[INFO] Structured output: removed a ```json code fence - "
-                                    "the response is valid JSON underneath"
-                                )
-                            else:
-                                troubleshooting_lines.append(
-                                    "[WARNING] Structured output requested but the response did not parse as JSON"
-                                )
-                                if getattr(response.stats, "stop_reason", None) == "maxPredictedTokensReached":
-                                    troubleshooting_lines.append(
-                                        "[HINT] The response hit max_tokens mid-object, so the JSON is "
-                                        "truncated. Raise max_tokens."
-                                    )
-                                else:
-                                    troubleshooting_lines.append(
-                                        "[HINT] 'JSON (no schema)' asks for JSON but does not constrain "
-                                        "decoding. Use 'JSON (schema below)' with an explicit schema when "
-                                        "a downstream node has to parse the response."
-                                    )
-
-                    # Split reasoning from the answer.
-                    final_response, reasoning = self._split_reasoning(
-                        response_text,
-                        native_reasoning,
-                        plain_content,
-                        reasoning_mode,
-                        custom_open_tag,
-                        custom_close_tag,
-                        troubleshooting_lines,
-                    )
-
-                    if reasoning:
-                        troubleshooting_lines.append(f"[INFO] Extracted reasoning: {len(reasoning)} chars")
-                        troubleshooting_lines.append(f"[INFO] Clean response: {len(final_response)} chars")
-
-                    result = (final_response, reasoning)
+                    if stream_error and response is None:
+                        # The stream died mid-flight (LM Studio stalled or the
+                        # socket dropped). Return what arrived instead of
+                        # discarding it with a bare "Generation failed".
+                        troubleshooting_lines.append(
+                            "[WARNING] Returning the partial text received before the failure"
+                        )
+                        fallback_text = native_reasoning + plain_content
+                        final_response, reasoning = self._split_reasoning(
+                            fallback_text,
+                            native_reasoning,
+                            plain_content,
+                            reasoning_mode,
+                            custom_open_tag,
+                            custom_close_tag,
+                            troubleshooting_lines,
+                        )
+                        result = (final_response, reasoning)
+                    else:
+                        response_text = response.content
+                        troubleshooting_lines.append(
+                            f"[INFO] Raw response length: {len(response_text)} chars"
+                        )
+                        result = self._finalize_response(
+                            response,
+                            response_text,
+                            gen_config,
+                            elapsed,
+                            structured,
+                            native_reasoning,
+                            plain_content,
+                            reasoning_mode,
+                            custom_open_tag,
+                            custom_close_tag,
+                            troubleshooting_lines,
+                        )
 
                     if interrupted:
                         # Report the cancellation to ComfyUI from inside the try, so
@@ -840,20 +997,7 @@ class EALMStudio:
         except Exception as e:
             error_msg = f"Generation failed: {type(e).__name__}: {e}"
             troubleshooting_lines.append(f"[ERROR] {error_msg}")
-
-            # Provide hints based on error type
-            error_str = str(e).lower()
-            if "connection" in error_str or "refused" in error_str:
-                troubleshooting_lines.append("[HINT] Ensure LM Studio is running with server enabled")
-            elif "context" in error_str or "length" in error_str or "2048" in error_str:
-                troubleshooting_lines.append("[HINT] Context length exceeded. In LM Studio, increase the model's context length setting")
-                troubleshooting_lines.append("[HINT] Note: maxTokens limits OUTPUT tokens; contextLength limits TOTAL tokens (input + output)")
-            elif "schema" in error_str or "json" in error_str:
-                troubleshooting_lines.append("[HINT] Check json_schema is a valid JSON Schema object, or set output_format back to 'Text'")
-            elif "not found" in error_str or "model" in error_str:
-                troubleshooting_lines.append("[HINT] Check model identifier matches LM Studio exactly")
-            elif "image" in error_str or "vision" in error_str or "multi" in error_str:
-                troubleshooting_lines.append("[HINT] This model may not support images or multiple image inputs. Try with a single image or text-only.")
+            troubleshooting_lines.extend(self._error_hints(str(e).lower()))
 
             logger.exception("EA_LMStudio generation error")
             return self._output("", "", troubleshooting_lines)
@@ -868,10 +1012,15 @@ class EALMStudio:
         which is more reliable than any tag regex when the model has Reasoning
         Parsing configured in LM Studio.
 
-        Returns ``(result, native_reasoning, plain_content, interrupted)``.
+        Returns ``(result, native_reasoning, plain_content, interrupted, error)``
+        with ``error`` None on a clean finish. If the stream dies mid-flight -
+        the SDK's sync API raises LMStudioTimeoutError after ~60s without any
+        server message; sockets can drop too - everything received so far is
+        returned alongside the error description instead of being lost.
         """
         pbar = ProgressBar(max_tokens) if ProgressBar is not None else None
         interrupted = False
+        error: Optional[str] = None
         reasoning_chunks: List[str] = []
         content_chunks: List[str] = []
         tokens_seen = 0
@@ -880,24 +1029,29 @@ class EALMStudio:
         # Note: the stream must be drained rather than broken out of. Breaking
         # closes the underlying generator and .result() then raises GeneratorExit;
         # cancel() ends it promptly with stop_reason "userStopped" instead.
-        for fragment in stream:
-            reasoning_type = getattr(fragment, "reasoning_type", "none")
-            if reasoning_type == "reasoning":
-                reasoning_chunks.append(fragment.content)
-            elif reasoning_type == "none":
-                content_chunks.append(fragment.content)
-            # reasoningStartTag / reasoningEndTag fragments are the delimiters
-            # themselves and belong in neither output.
+        try:
+            for fragment in stream:
+                reasoning_type = getattr(fragment, "reasoning_type", "none")
+                if reasoning_type == "reasoning":
+                    reasoning_chunks.append(fragment.content)
+                elif reasoning_type == "none":
+                    content_chunks.append(fragment.content)
+                # reasoningStartTag / reasoningEndTag fragments are the delimiters
+                # themselves and belong in neither output.
 
-            tokens_seen += getattr(fragment, "tokens_count", 0) or 0
-            if pbar is not None:
-                pbar.update_absolute(min(tokens_seen, max_tokens), max_tokens)
+                tokens_seen += getattr(fragment, "tokens_count", 0) or 0
+                if pbar is not None:
+                    pbar.update_absolute(min(tokens_seen, max_tokens), max_tokens)
 
-            if not interrupted and model_management.processing_interrupted():
-                stream.cancel()
-                interrupted = True
+                if not interrupted and model_management.processing_interrupted():
+                    stream.cancel()
+                    interrupted = True
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+            logger.warning(f"EA_LMStudio: prediction stream ended early - {error}")
 
-        return stream.result(), "".join(reasoning_chunks), "".join(content_chunks), interrupted
+        result = None if error is not None else stream.result()
+        return result, "".join(reasoning_chunks), "".join(content_chunks), interrupted, error
 
     @staticmethod
     def _split_reasoning(

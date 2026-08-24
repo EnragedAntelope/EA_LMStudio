@@ -3,8 +3,8 @@ Reasoning / thinking extraction for EA_LMStudio.
 
 Pure text-processing helpers with no heavy dependencies (only ``re`` and
 ``typing``). Kept in a standalone module — separate from ``LMStudio.py``, which
-imports the lmstudio SDK and ComfyUI and performs a network fetch at import time
-— so this logic stays importable and unit-testable on its own.
+imports the lmstudio SDK and ComfyUI and starts a background model fetch at
+import time — so this logic stays importable and unit-testable on its own.
 """
 import re
 from typing import Optional, Tuple
