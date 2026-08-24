@@ -21,7 +21,7 @@ _Vision: captioning an image with a VLM into schema-constrained JSON that downst
 - **Advanced Controls** - Temperature, top-k/p, min-p, repetition penalty, stop strings, context-overflow policy, speculative decoding
 - **Honest Diagnostics** - Every parameter is checked against the config LM Studio reports back, so a setting that silently does nothing is reported instead of hidden
 - **Detailed Stats** - Tokens/sec, time to first token, stop reason, token counts, and speculative-decoding acceptance rates
-- **VRAM Management** - Auto-unload after generation (enabled by default)
+- **VRAM Management** - Auto-unload after generation (enabled by default), including the draft model, and confirmed against LM Studio rather than assumed — so the next node in the workflow really does see the memory back
 
 ## Installation
 

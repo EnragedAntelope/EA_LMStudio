@@ -49,6 +49,7 @@ from .lms_params import (
     strip_json_code_fence,
 )
 from .lms_image import convert_image_to_pil
+from .lms_unload import model_ids, unload_llm_instances
 
 # Setup logging
 logger = logging.getLogger("EA_LMStudio")
@@ -653,7 +654,13 @@ class EALMStudio:
         if pil_images:
             troubleshooting_lines.append(f"[INFO] Total images for VLM: {len(pil_images)}")
 
-        # Build inference request
+        # Build inference request.
+        # These are carried out of the ``with`` block: the troubleshooting lines
+        # are still being appended to while the model is unloaded, so the node
+        # result can only be built once the client is closed.
+        result: Optional[Tuple[str, str]] = None
+        loaded_identifier: Optional[str] = None
+        loaded_key: Optional[str] = None
         try:
             troubleshooting_lines.append("[INFO] Connecting to LM Studio...")
 
@@ -664,149 +671,169 @@ class EALMStudio:
 
             # Create LM Studio client
             with lms.Client(server_address) as client:
-                # Load or get model
-                model = client.llm.model(model_identifier)
-                troubleshooting_lines.append(f"[INFO] Model loaded: {model_identifier}")
-
-                # Build chat
-                chat = lms.Chat(system_message)
-
-                # Add user message (with optional images)
-                if pil_images:
-                    chat.add_user_message(prompt, images=self._prepare_images(client, pil_images))
-                else:
-                    chat.add_user_message(prompt)
-
-                # Build generation config.
-                # Keys are validated against LlmPredictionConfigDict in the
-                # lmstudio SDK. Anything not in that type is DISCARDED SILENTLY
-                # by the SDK before the request leaves the machine, so a wrong
-                # key looks like it worked - the applied-config check below is
-                # what makes that visible.
-                gen_config: Dict[str, Any] = {
-                    "temperature": temperature,
-                    "maxTokens": max_tokens,
-                    "contextOverflowPolicy": CONTEXT_OVERFLOW_POLICIES.get(
-                        context_overflow, "truncateMiddle"
-                    ),
-                }
-
-                # Add optional parameters only when set away from their disabled
-                # default, so default workflows send nothing extra.
-                if top_p < 1.0:
-                    gen_config["topPSampling"] = top_p
-                if top_k > 0:
-                    gen_config["topKSampling"] = top_k
-                if repeat_penalty != 1.0:
-                    gen_config["repeatPenalty"] = repeat_penalty
-                if min_p > 0.0:
-                    gen_config["minPSampling"] = min_p
-                if stops:
-                    gen_config["stopStrings"] = stops
-                if structured:
-                    gen_config["structured"] = structured
-                if draft_model:
-                    gen_config["draftModel"] = draft_model
-
-                troubleshooting_lines.append(f"[INFO] Config: {_summarize_config(gen_config)}")
-                troubleshooting_lines.append("[INFO] Generating...")
-
-                start_time = time.time()
-                response, native_reasoning, plain_content, interrupted = self._stream(
-                    model, chat, gen_config, max_tokens
-                )
-                elapsed = time.time() - start_time
-
-                if interrupted:
-                    troubleshooting_lines.append(
-                        "[WARNING] Cancelled from ComfyUI - partial output returned"
-                    )
-                else:
-                    troubleshooting_lines.append("[INFO] Generation complete")
-
-                response_text = response.content
-                troubleshooting_lines.append(f"[INFO] Raw response length: {len(response_text)} chars")
-
-                # Verify the server actually applied what we asked for. The SDK
-                # drops unknown keys without a word, so this is the only way a
-                # parameter that quietly does nothing becomes visible.
                 try:
-                    applied = response.prediction_config.to_dict()
-                except Exception:  # pragma: no cover - defensive
-                    applied = {}
-                if applied:
-                    ignored = [
-                        key for key in missing_config_keys(gen_config, applied)
-                        if key not in _UNVERIFIABLE_CONFIG_KEYS
-                    ]
-                    if ignored:
-                        troubleshooting_lines.append(
-                            f"[WARNING] LM Studio did not apply: {', '.join(ignored)} - "
-                            "your installed lmstudio package or LM Studio build may be too old for these"
-                        )
+                    # Load or get model
+                    model = client.llm.model(model_identifier)
+                    troubleshooting_lines.append(f"[INFO] Model loaded: {model_identifier}")
 
-                troubleshooting_lines.extend(self._stats_lines(response.stats, elapsed))
+                    # Record both names now: once unloaded the handle no longer
+                    # resolves, and the matcher needs whichever name LM Studio
+                    # reports for this instance.
+                    loaded_identifier, loaded_key = model_ids(model)
 
-                if structured:
-                    if response.structured:
-                        troubleshooting_lines.append("[INFO] Structured output: valid JSON")
+                    # Build chat
+                    chat = lms.Chat(system_message)
+
+                    # Add user message (with optional images)
+                    if pil_images:
+                        chat.add_user_message(prompt, images=self._prepare_images(client, pil_images))
                     else:
-                        # "JSON (no schema)" does not constrain decoding, so models
-                        # commonly answer with a ```json fenced block. Unwrapping it
-                        # (only when the contents really parse) is the difference
-                        # between a usable output and one no downstream node can read.
-                        unfenced, stripped = strip_json_code_fence(response_text)
-                        if stripped:
-                            response_text = unfenced
+                        chat.add_user_message(prompt)
+
+                    # Build generation config.
+                    # Keys are validated against LlmPredictionConfigDict in the
+                    # lmstudio SDK. Anything not in that type is DISCARDED SILENTLY
+                    # by the SDK before the request leaves the machine, so a wrong
+                    # key looks like it worked - the applied-config check below is
+                    # what makes that visible.
+                    gen_config: Dict[str, Any] = {
+                        "temperature": temperature,
+                        "maxTokens": max_tokens,
+                        "contextOverflowPolicy": CONTEXT_OVERFLOW_POLICIES.get(
+                            context_overflow, "truncateMiddle"
+                        ),
+                    }
+
+                    # Add optional parameters only when set away from their disabled
+                    # default, so default workflows send nothing extra.
+                    if top_p < 1.0:
+                        gen_config["topPSampling"] = top_p
+                    if top_k > 0:
+                        gen_config["topKSampling"] = top_k
+                    if repeat_penalty != 1.0:
+                        gen_config["repeatPenalty"] = repeat_penalty
+                    if min_p > 0.0:
+                        gen_config["minPSampling"] = min_p
+                    if stops:
+                        gen_config["stopStrings"] = stops
+                    if structured:
+                        gen_config["structured"] = structured
+                    if draft_model:
+                        gen_config["draftModel"] = draft_model
+
+                    troubleshooting_lines.append(f"[INFO] Config: {_summarize_config(gen_config)}")
+                    troubleshooting_lines.append("[INFO] Generating...")
+
+                    start_time = time.time()
+                    response, native_reasoning, plain_content, interrupted = self._stream(
+                        model, chat, gen_config, max_tokens
+                    )
+                    elapsed = time.time() - start_time
+
+                    if interrupted:
+                        troubleshooting_lines.append(
+                            "[WARNING] Cancelled from ComfyUI - partial output returned"
+                        )
+                    else:
+                        troubleshooting_lines.append("[INFO] Generation complete")
+
+                    response_text = response.content
+                    troubleshooting_lines.append(f"[INFO] Raw response length: {len(response_text)} chars")
+
+                    # Verify the server actually applied what we asked for. The SDK
+                    # drops unknown keys without a word, so this is the only way a
+                    # parameter that quietly does nothing becomes visible.
+                    try:
+                        applied = response.prediction_config.to_dict()
+                    except Exception:  # pragma: no cover - defensive
+                        applied = {}
+                    if applied:
+                        ignored = [
+                            key for key in missing_config_keys(gen_config, applied)
+                            if key not in _UNVERIFIABLE_CONFIG_KEYS
+                        ]
+                        if ignored:
                             troubleshooting_lines.append(
-                                "[INFO] Structured output: removed a ```json code fence - "
-                                "the response is valid JSON underneath"
+                                f"[WARNING] LM Studio did not apply: {', '.join(ignored)} - "
+                                "your installed lmstudio package or LM Studio build may be too old for these"
                             )
+
+                    troubleshooting_lines.extend(self._stats_lines(response.stats, elapsed))
+
+                    if structured:
+                        if response.structured:
+                            troubleshooting_lines.append("[INFO] Structured output: valid JSON")
                         else:
-                            troubleshooting_lines.append(
-                                "[WARNING] Structured output requested but the response did not parse as JSON"
-                            )
-                            if getattr(response.stats, "stop_reason", None) == "maxPredictedTokensReached":
+                            # "JSON (no schema)" does not constrain decoding, so models
+                            # commonly answer with a ```json fenced block. Unwrapping it
+                            # (only when the contents really parse) is the difference
+                            # between a usable output and one no downstream node can read.
+                            unfenced, stripped = strip_json_code_fence(response_text)
+                            if stripped:
+                                response_text = unfenced
                                 troubleshooting_lines.append(
-                                    "[HINT] The response hit max_tokens mid-object, so the JSON is "
-                                    "truncated. Raise max_tokens."
+                                    "[INFO] Structured output: removed a ```json code fence - "
+                                    "the response is valid JSON underneath"
                                 )
                             else:
                                 troubleshooting_lines.append(
-                                    "[HINT] 'JSON (no schema)' asks for JSON but does not constrain "
-                                    "decoding. Use 'JSON (schema below)' with an explicit schema when "
-                                    "a downstream node has to parse the response."
+                                    "[WARNING] Structured output requested but the response did not parse as JSON"
                                 )
+                                if getattr(response.stats, "stop_reason", None) == "maxPredictedTokensReached":
+                                    troubleshooting_lines.append(
+                                        "[HINT] The response hit max_tokens mid-object, so the JSON is "
+                                        "truncated. Raise max_tokens."
+                                    )
+                                else:
+                                    troubleshooting_lines.append(
+                                        "[HINT] 'JSON (no schema)' asks for JSON but does not constrain "
+                                        "decoding. Use 'JSON (schema below)' with an explicit schema when "
+                                        "a downstream node has to parse the response."
+                                    )
 
-                # Split reasoning from the answer.
-                final_response, reasoning = self._split_reasoning(
-                    response_text,
-                    native_reasoning,
-                    plain_content,
-                    reasoning_mode,
-                    custom_open_tag,
-                    custom_close_tag,
-                    troubleshooting_lines,
-                )
+                    # Split reasoning from the answer.
+                    final_response, reasoning = self._split_reasoning(
+                        response_text,
+                        native_reasoning,
+                        plain_content,
+                        reasoning_mode,
+                        custom_open_tag,
+                        custom_close_tag,
+                        troubleshooting_lines,
+                    )
 
-                if reasoning:
-                    troubleshooting_lines.append(f"[INFO] Extracted reasoning: {len(reasoning)} chars")
-                    troubleshooting_lines.append(f"[INFO] Clean response: {len(final_response)} chars")
+                    if reasoning:
+                        troubleshooting_lines.append(f"[INFO] Extracted reasoning: {len(reasoning)} chars")
+                        troubleshooting_lines.append(f"[INFO] Clean response: {len(final_response)} chars")
 
-                # Unload LLM if requested
-                if unload_llm:
-                    try:
-                        model.unload()
-                        troubleshooting_lines.append("[INFO] LLM unloaded from LM Studio")
-                    except Exception as e:
-                        troubleshooting_lines.append(f"[WARNING] Failed to unload LLM: {e}")
+                    result = (final_response, reasoning)
 
-                if interrupted:
-                    # Report the cancellation to ComfyUI *after* unloading, so a
-                    # cancelled run still frees VRAM.
-                    model_management.throw_exception_if_processing_interrupted()
+                    if interrupted:
+                        # Report the cancellation to ComfyUI from inside the try, so
+                        # the finally below still frees the VRAM on the way out.
+                        model_management.throw_exception_if_processing_interrupted()
 
-                return self._output(final_response, reasoning, troubleshooting_lines)
+                finally:
+                    # Unload in a finally: a generation that failed (context
+                    # overflow, dropped connection, an image the model cannot
+                    # take) is exactly the run where the next node is about to
+                    # ask for that VRAM.
+                    if unload_llm:
+                        unload_llm_instances(
+                            client,
+                            [model_identifier, draft_model, loaded_identifier, loaded_key],
+                            troubleshooting_lines,
+                        )
+                        if loaded_key and loaded_identifier and loaded_key != loaded_identifier:
+                            troubleshooting_lines.append(
+                                f"[HINT] '{loaded_identifier}' was a serving identifier, not a "
+                                f"model key. Once unloaded it no longer resolves - set this "
+                                f"node's model to '{loaded_key}' so the next run can JIT-load it"
+                            )
+
+            if result is None:  # defensive; the try body always sets it
+                result = ("", "")
+            return self._output(result[0], result[1], troubleshooting_lines)
 
         except _INTERRUPT_EXCEPTIONS:
             raise  # user cancellation is not a node failure

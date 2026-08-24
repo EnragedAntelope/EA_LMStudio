@@ -8,16 +8,17 @@ inside the node.
 
 ## Current state
 
-_Last verified: 2026-08-09_
+_Last verified: 2026-08-19_
 
-- **Status:** v2.0.0, published to the Comfy Registry from `main` on every
+- **Status:** v2.0.1, published to the Comfy Registry from `main` on every
   `pyproject.toml` version change.
 - **Works:** model discovery + refresh (startup fetch and a live API route),
   text generation, multi-image VLM input, reasoning extraction (LM Studio's own
   split, with tag-regex fallback), structured JSON output, stop strings,
   context-overflow policy, speculative decoding with acceptance stats,
-  cancellable streaming with a queue progress bar, VRAM unload of both the LLM
-  and ComfyUI's own models, and migration of workflows saved by 1.x.
+  cancellable streaming with a queue progress bar, confirmed VRAM unload of the
+  LLM, the draft model and ComfyUI's own models, and migration of workflows
+  saved by 1.x.
 - **In progress:** nothing outstanding.
 - **Known gaps:** LM Studio's `ttl`, tool/function calling (`.act()`), GBNF
   grammars, and load-time `seed` (real determinism, but it only applies when the
@@ -56,6 +57,7 @@ stub `comfy.model_management` / `comfy.utils` — the node only needs
 | `lms_params.py` | Pure widget-string → SDK-value helpers (stop strings, schema, fences) |
 | `lms_reasoning.py` | Tag/harmony reasoning regexes (fallback path) |
 | `lms_image.py` | ComfyUI IMAGE tensor → JPEG-safe PIL |
+| `lms_unload.py` | Match loaded instances, unload, wait for LM Studio to confirm |
 | `model_fetcher.py` | `/v1/models` discovery, validation, cache |
 | `lms_config/` | `default_config.json` + gitignored `user_config.json` |
 | `web/ea_lmstudio.js` | Refresh toggle, in-node preview, 1.x workflow migration |
@@ -105,6 +107,17 @@ Call `stream.cancel()` and keep iterating; it ends promptly with
 one with `:.2f` without a None check raised `TypeError` *after* a successful
 generation, which the outer handler then reported as a failure — throwing away
 text the model had already produced.
+
+**LM Studio frees VRAM asynchronously, and a model answers to two names.**
+`handle.unload()` returns as soon as the request is *accepted*, so a node that
+returns immediately hands the next node a VRAM figure that is still shrinking —
+which defeats the point of the `unload_llm` toggle. `lms_unload` polls
+`client.llm.list_loaded()` until the model is gone. That listing is also the
+only safe way to find the model: it is loaded under both a serving identifier
+(`lms load --identifier`) and a model key (`publisher/repo`), and resolving
+either through `client.llm.model(id)` would JIT-load a model purely in order to
+unload it. Note that an identifier stops resolving once unloaded, so a workflow
+pinned to one cannot JIT-load on its next run — the node warns about this.
 
 **`{"type": "json"}` without a schema does not constrain decoding.** Models
 routinely answer with a ```` ```json ```` fence. Only `jsonSchema` constrains the
