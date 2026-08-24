@@ -28,17 +28,28 @@ jobs:
         id: version_check
         run: |
           set -e
-          OLD_VERSION=$(git show HEAD^:pyproject.toml 2>/dev/null | grep '^version' | sed 's/.*"//' | sed 's/".*//')
-          NEW_VERSION=$(grep '^version' pyproject.toml | sed 's/.*"//' | sed 's/".*//')
-          echo "old=${OLD_VERSION}"
-          echo "new=${NEW_VERSION}"
+          # `sed 's/.*"//'` is GREEDY: on `version = "2.1.0"` it matches through
+          # the CLOSING quote and yields an empty string. Both versions came out
+          # empty, compared equal, and every publish from 2.0.0 to 2.1.0 was
+          # silently skipped while the workflow reported success. Cut on the
+          # quote instead, and fail loudly rather than parse to nothing.
+          OLD_VERSION=$(git show HEAD^:pyproject.toml 2>/dev/null | grep -m1 '^version' | cut -d'"' -f2 || true)
+          NEW_VERSION=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2 || true)
+          echo "old=${OLD_VERSION:-<none>}"
+          echo "new=${NEW_VERSION:-<unparsed>}"
+          if [ -z "$NEW_VERSION" ]; then
+            echo "::error::Could not parse version from pyproject.toml - refusing to guess"
+            exit 1
+          fi
           if [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
           else
             echo "changed=false" >> $GITHUB_OUTPUT
           fi
       - name: Publish Custom Node
-        if: steps.version_check.outputs.changed == 'true'
+        # A manual run means "publish now" - it is the way to recover a version
+        # the push path missed, where HEAD^ already carries the same version.
+        if: steps.version_check.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         uses: Comfy-Org/publish-node-action@v1
         with:
           ## Add your own personal access token to your Github Repository secrets and reference it here.
