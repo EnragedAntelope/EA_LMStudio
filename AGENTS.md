@@ -163,7 +163,19 @@ sampler.
 
 - Registry publishing is driven by the `version` in `pyproject.toml`; the
   workflow compares it against `HEAD^` and skips when unchanged. Bump it in the
-  same commit as any change worth shipping.
+  same commit as any change worth shipping. **Check the Registry actually
+  received it** — `https://api.comfy.org/nodes/EA_LMStudio` reports
+  `latest_version`. A green "Publish to Comfy registry" run does not mean a
+  publish happened: the version check is a separate step and a skip looks
+  identical to a success from the runs list. That is not hypothetical — the
+  guard's `sed 's/.*"//'` was greedy, parsed every version to an empty string,
+  and silently skipped **every** publish from 2.0.0 through 2.1.0, leaving the
+  Registry on 1.5.0 for the whole 2.x line. It now fails loudly instead of
+  parsing to nothing.
+- To publish a version the push path missed, run the workflow manually
+  (`gh workflow run "Publish to Comfy registry" --ref main`). A
+  `workflow_dispatch` run publishes unconditionally, because in that situation
+  `HEAD^` already carries the same version and the change check can never pass.
 - `lms_config/user_config.json` and `worklogs/` are gitignored. Never commit
   either, and never put a server address or token in a tracked file.
 - Keep the `CUSTOM_MODEL_OPTION` literal in `web/ea_lmstudio.js` in sync with
