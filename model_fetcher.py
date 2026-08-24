@@ -6,9 +6,6 @@ import re
 import requests
 import logging
 from typing import Dict, List, Optional, Tuple
-import requests
-import logging
-from typing import List, Optional, Tuple
 
 
 logger = logging.getLogger("EA_LMStudio")
@@ -35,12 +32,6 @@ def auth_headers(api_token: Optional[str]) -> Dict[str, str]:
     """
     token = str(api_token or "").strip()
     return {"Authorization": f"Bearer {token}"} if token else {}
-    """Authorization header for LM Studio servers with token auth enabled.
-
-    Empty dict when no token is configured, so callers can pass this
-    straight through as ``headers=``.
-    """
-    return {"Authorization": f"Bearer {api_token}"} if api_token else {}
 
 
 def origin_matches_host(origin: Optional[str], host: Optional[str]) -> bool:
@@ -60,6 +51,7 @@ def origin_matches_host(origin: Optional[str], host: Optional[str]) -> bool:
         return False
     # Origin is always "<scheme>://<host>[:<port>]"; compare the authority.
     return origin.split("://", 1)[-1] == host
+
 
 # Constants
 CUSTOM_MODEL_OPTION = "-- Custom (enter below) --"
@@ -213,8 +205,6 @@ def get_model_choices() -> List[str]:
     Returns:
         List with Custom option first, followed by cached models.
     """
-    global _cached_models
-
     choices = [CUSTOM_MODEL_OPTION]
 
     if _cached_models:

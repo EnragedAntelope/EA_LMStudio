@@ -135,6 +135,9 @@ function migrateLegacyWidgetValues(node, widgetValues, defaults) {
 
     // No toast on purpose: the realignment is silent housekeeping, and a
     // banner on every v1 workflow load was noise users just clicked away.
+    // The boolean return stays - it is this function's documented contract
+    // and the only way a caller can tell a migration from a no-op.
+    return true;
 }
 
 /**

@@ -29,5 +29,9 @@ jobs:
         # missing, so it also has to pass without a running LM Studio - the
         # startup model fetch simply fails to connect and is handled.
         run: pip install -r requirements-dev.txt
+      - name: Lint (undefined names, unused/duplicate imports)
+        # Cheap gate for the bug class tests cannot see: a name used but never
+        # imported only raises on the code path that uses it.
+        run: pyflakes .
       - name: Run tests
         run: pytest -q

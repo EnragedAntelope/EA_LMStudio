@@ -31,6 +31,9 @@ _Last verified: 2026-08-24_
   config has no `ttl` field in 1.5.0. There is no automated frontend test —
   `web/ea_lmstudio.js` is verified by hand in a browser, though the
   JS/Python `CUSTOM_MODEL_OPTION` sync and route paths ARE unit-tested.
+  Vision generation is exercised end-to-end only by hand against a real VLM;
+  the suite covers `_prepare_images` (temp file written, uploaded, removed)
+  but stops at the SDK boundary.
 - **Deep docs:** user-facing behaviour lives in `README.md`; nothing is
   duplicated here.
 
@@ -38,7 +41,8 @@ _Last verified: 2026-08-24_
 
 ```bash
 pip install -r requirements-dev.txt   # pulls requirements.txt too
-pytest -q                              # 100+ tests, no LM Studio needed
+pyflakes .                             # undefined names / duplicate imports
+pytest -q                              # whole suite; no LM Studio needed
 ```
 
 The suite is dependency-light by design. `tests/conftest.py` stubs `lmstudio`
@@ -47,7 +51,12 @@ install is never shadowed, and registers the repo root as a synthetic package so
 `LMStudio.py` (which uses relative imports) is importable without the checkout
 having to be named `EA_LMStudio`.
 
-CI runs the same command on Python 3.10 and 3.13 (`.github/workflows/test.yml`).
+CI runs both commands on Python 3.10 and 3.13 (`.github/workflows/test.yml`).
+The `pyflakes` step is not decoration: 2.1.0 development deleted
+`from tempfile import NamedTemporaryFile` while leaving the call in place, and
+the whole suite stayed green because nothing reached the image-upload path.
+An undefined name only raises on the branch that uses it — tests alone cannot
+be relied on to find that class.
 
 To exercise the node for real, point a scratch script at a running LM Studio and
 stub `comfy.model_management` / `comfy.utils` — the node only needs
@@ -124,6 +133,27 @@ only safe way to find the model: it is loaded under both a serving identifier
 either through `client.llm.model(id)` would JIT-load a model purely in order to
 unload it. Note that an identifier stops resolving once unloaded, so a workflow
 pinned to one cannot JIT-load on its next run — the node warns about this.
+
+**The startup model fetch is a daemon thread, so `INPUT_TYPES` races it.**
+`/object_info` is what fills both model dropdowns, and it is served whenever the
+browser asks — in principle before the fetch returns, which would render an
+empty dropdown against a perfectly healthy LM Studio. Measured 2026-08-24
+against a live local server with 14 models: the fetch takes **~5 ms**, while
+ComfyUI still has the rest of its custom nodes to load and a server to start, so
+the thread always wins. Do not add a join to "fix" this without measuring first
+— a join at import time would reinstate exactly the startup stall the thread
+removed. If LM Studio is genuinely slow or unreachable the dropdown is empty
+*correctly*, and the `/ea_lmstudio/models` status route tells the frontend why.
+
+**A stream failure is not the same as a pre-flight failure, and both need
+hints.** `_error_hints` is called from two places: the outer `except` (errors
+raised before or around generation) and the `stream_error` branch (the stream
+died mid-flight). It also takes `has_images`, because LM Studio's most common
+vision failure does not always mention images — sending a picture to a text-only
+model can surface as `No engine protocol runtime is registered for '<id>'`,
+which reads like an internal fault. Both spellings are covered; the observed
+alternative is `image input is not supported ... you may need to provide the
+mmproj`.
 
 **`{"type": "json"}` without a schema does not constrain decoding.** Models
 routinely answer with a ```` ```json ```` fence. Only `jsonSchema` constrains the

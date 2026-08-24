@@ -96,6 +96,7 @@ def _fake_server(monkeypatch, ids, capture=None):
     # The fetcher reuses one requests.Session; patch its get, not the module.
     monkeypatch.setattr(model_fetcher._session, "get", fake_get)
 
+
 def test_fetch_sorts_and_excludes(monkeypatch):
     _fake_server(monkeypatch, ["zeta-7b", "text-embedding-small", "Alpha-3b"])
     models, error, rejected = fetch_models_from_server("http://x", 1.0, ["embedding"])
@@ -140,7 +141,6 @@ def test_default_is_a_real_model_when_available(monkeypatch):
 def test_default_falls_back_to_custom_when_discovery_failed(monkeypatch):
     monkeypatch.setattr(model_fetcher, "_cached_models", [])
     assert get_default_model_choice() == CUSTOM_MODEL_OPTION
-
 
 
 # --- auth headers / origin guard -----------------------------------------

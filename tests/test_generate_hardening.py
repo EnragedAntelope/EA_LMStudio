@@ -177,3 +177,121 @@ def test_stream_still_reports_clean_finishes(monkeypatch):
     assert interrupted is False
     assert plain == "done"
     assert result.content == "done"
+
+
+# --- _prepare_images -------------------------------------------------------
+#
+# The image-upload path had no test at all, which is how a deleted
+# ``from tempfile import NamedTemporaryFile`` shipped on this branch: every
+# vision run raised NameError while 151 tests stayed green. These pin the
+# whole round trip - temp file written, closed, uploaded, then removed.
+
+class _RecordingFiles:
+    def __init__(self):
+        self.uploaded = []
+
+    def prepare_image(self, path):
+        with open(path, "rb") as fh:
+            assert fh.read(2) == b"\xff\xd8", "uploaded file is not JPEG"
+        self.uploaded.append(path)
+        return f"handle:{len(self.uploaded)}"
+
+
+class _FilesClient:
+    def __init__(self):
+        self.files = _RecordingFiles()
+
+
+def _pil_image(size=(8, 8)):
+    from PIL import Image
+
+    return Image.new("RGB", size, "red")
+
+
+def test_prepare_images_uploads_each_image_and_cleans_up():
+    import os
+
+    client = _FilesClient()
+    handles = EALMStudio._prepare_images(client, [_pil_image(), _pil_image((4, 4))])
+
+    assert handles == ["handle:1", "handle:2"]
+    for path in client.files.uploaded:
+        assert not os.path.exists(path), "temp image was left on disk"
+
+
+def test_prepare_images_removes_the_temp_file_even_when_upload_fails():
+    import os
+
+    seen = []
+
+    class _FailingFiles:
+        def prepare_image(self, path):
+            seen.append(path)
+            raise RuntimeError("upload rejected")
+
+    class _FailingClient:
+        files = _FailingFiles()
+
+    with pytest.raises(RuntimeError):
+        EALMStudio._prepare_images(_FailingClient(), [_pil_image()])
+
+    assert seen and not os.path.exists(seen[0])
+
+
+class _StreamWithDeadResult:
+    """Drains cleanly, then .result() raises - a socket dropping at the finish."""
+
+    def __iter__(self):
+        yield _Fragment("almost ")
+        yield _Fragment("everything")
+
+    def cancel(self):  # pragma: no cover - not interrupted here
+        pass
+
+    def result(self):
+        raise RuntimeError("connection reset")
+
+
+def test_stream_preserves_output_when_result_fails_after_a_clean_drain(monkeypatch):
+    """Guarding only the fragment loop still lost a completed generation."""
+    monkeypatch.setattr(
+        _node.model_management, "processing_interrupted", lambda: False, raising=False
+    )
+    monkeypatch.setattr(_node, "ProgressBar", None, raising=False)
+
+    model = SimpleNamespace(respond_stream=lambda chat, config=None: _StreamWithDeadResult())
+    result, native, plain, interrupted, error = EALMStudio()._stream(model, None, {}, 16)
+
+    assert result is None
+    assert plain == "almost everything"
+    assert interrupted is False
+    assert error is not None and "RuntimeError" in error
+
+
+# --- stream-error reporting honesty ---------------------------------------
+#
+# Measured live against LM Studio: asking a text-only model for a vision
+# response fails mid-stream with "No engine protocol runtime is registered".
+# The node reported "Returning the partial text received before the failure"
+# while returning nothing at all, and offered no hint about the real cause.
+
+def test_error_hints_fire_for_a_vision_capability_failure():
+    hints = EALMStudio._error_hints(
+        "lmstudioservererror: chat response error: no engine protocol runtime "
+        "is registered for 'abc'.",
+        has_images=True,
+    )
+    assert any("vision (VLM) model" in h for h in hints)
+
+
+def test_engine_runtime_failure_without_images_points_at_the_runtime():
+    hints = EALMStudio._error_hints(
+        "no engine protocol runtime is registered for 'abc'.", has_images=False
+    )
+    assert any("runtime/format" in h for h in hints)
+    assert not any("VLM" in h for h in hints)
+
+
+def test_an_unrecognised_failure_on_an_image_run_names_the_likely_cause():
+    assert EALMStudio._error_hints("quantization exploded", has_images=True)
+    assert EALMStudio._error_hints("quantization exploded", has_images=False) == []

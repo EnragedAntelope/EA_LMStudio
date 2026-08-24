@@ -87,7 +87,7 @@ LM Studio 0.4.0+ can require an API token. Because workflows are shared as plain
 }
 ```
 
-or export the `LM_API_TOKEN` environment variable (the `lmstudio` package's own convention; a value in `user_config.json` wins). Model discovery always honours it; generation needs `lmstudio >= 1.6`, and the node logs a clear warning if your installed SDK predates token support.
+or export the `LM_API_TOKEN` environment variable (the `lmstudio` package's own convention; a value in `user_config.json` wins). Model discovery always honours it. Generation needs `lmstudio >= 1.6`, which is still a prerelease — a plain `pip install lmstudio` gets 1.5.0, where the SDK cannot send a token at all, and the node logs a clear warning once instead of failing every run. Install `lmstudio>=1.6.0b1` explicitly if you need authenticated generation.
 
 > **Note on transport:** LM Studio's server speaks plain HTTP - it has no built-in TLS (as of 0.4.x). For tokens over any network that is not localhost-only, front LM Studio with a TLS reverse proxy (Caddy/nginx) and point `server_host` at it.
 
@@ -121,7 +121,9 @@ The response also renders inside the node itself, so a preview node is optional.
 
 ## Upgrading from 1.x
 
-You do not need to rebuild anything. When a workflow saved by 1.x is loaded, the node detects the old layout and silently realigns every remaining setting to the right widget.
+**Version 2.0.0 removed the `presence_penalty` and `enable_thinking` widgets.** Neither ever did anything: the `lmstudio` SDK silently discards prediction-config keys it does not recognise, and LM Studio has no presence penalty and no thinking on/off flag. They were dropped before the request ever left your machine.
+
+You do not need to rebuild anything. When a workflow saved by 1.x is loaded, the node detects the old layout and silently realigns every remaining setting to the right widget. Without that, removing two mid-list widgets would have shifted every later value by one or two slots.
 
 If you relied on `enable_thinking`, the equivalents that genuinely work are configuring **Reasoning Parsing** for the model in LM Studio, editing the model's Jinja template (`{%- set enable_thinking = false %}`), or a `/think` / `/no_think` marker in the prompt for Qwen3-family models.
 

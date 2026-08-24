@@ -7,9 +7,6 @@ import logging
 import os
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-import logging
-from pathlib import Path
-from typing import Dict, Any, List, Optional
 
 
 logger = logging.getLogger("EA_LMStudio")

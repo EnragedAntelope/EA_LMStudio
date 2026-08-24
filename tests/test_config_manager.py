@@ -59,8 +59,6 @@ def test_timeout_from_config_is_float():
 
 def test_timeout_default():
     assert _cm().get_timeout({}) == 5.0
-def test_timeout_default():
-    assert _cm().get_timeout({}) == 5.0
 
 
 # --- junk-value tolerance (a non-numeric timeout used to crash the whole

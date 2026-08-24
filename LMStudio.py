@@ -8,6 +8,7 @@ import inspect
 import os
 import threading
 import time
+from tempfile import NamedTemporaryFile
 from PIL import Image
 
 # LM Studio SDK
@@ -198,7 +199,7 @@ _api_token_unsupported_warned = False
 def _create_client(server_address: str, api_token: str):
     """Build an lmstudio SDK client, attaching the API token when supported.
 
-    Token authentication needs an SDK new enough to accept an ``api_token"
+    Token authentication needs an SDK new enough to accept an ``api_token``
     argument on Client (1.6.0b1 onwards). Older SDKs raise TypeError just by
     receiving it, so support is detected from the signature and the missing
     capability warns once instead of failing every run.
@@ -220,6 +221,7 @@ def _create_client(server_address: str, api_token: str):
             "the token over REST; upgrade the package for authenticated generation."
         )
     return lms.Client(server_address)
+
 
 class EALMStudio:
     """
@@ -560,9 +562,28 @@ class EALMStudio:
         return lines
 
     @staticmethod
-    def _error_hints(error_str: str) -> List[str]:
-        """Actionable hints keyed off the error text (pure, unit-tested)."""
+    def _error_hints(error_str: str, has_images: bool = False) -> List[str]:
+        """Actionable hints keyed off the error text (pure, unit-tested).
+
+        ``has_images`` matters because LM Studio's most common vision failure
+        never says "image": sending a picture to a text-only model fails with
+        "No engine protocol runtime is registered for '<id>'", which reads
+        like an internal fault. Observed live against LM Studio 0.4.x.
+        """
         hints: List[str] = []
+        if "engine" in error_str and "runtime" in error_str:
+            if has_images:
+                hints.append(
+                    "[HINT] LM Studio has no runtime able to serve this request. With an "
+                    "image attached this almost always means the selected model is text-only "
+                    "- pick a vision (VLM) model, or disconnect the image inputs."
+                )
+            else:
+                hints.append(
+                    "[HINT] LM Studio has no runtime registered for this request. Check the "
+                    "model's runtime/format in LM Studio, or reload the model."
+                )
+            return hints
         if "timeout" in error_str or "timed out" in error_str:
             hints.append(
                 "[HINT] LM Studio sent no data within the sync timeout (~60s idle). "
@@ -579,6 +600,14 @@ class EALMStudio:
             hints.append("[HINT] Check model identifier matches LM Studio exactly")
         elif "image" in error_str or "vision" in error_str or "multi" in error_str:
             hints.append("[HINT] This model may not support images or multiple image inputs. Try with a single image or text-only.")
+        if has_images and not hints:
+            # An unrecognised failure on a run that carried images: the model
+            # not being a VLM is by far the likeliest cause, and nothing else
+            # in the output would point there.
+            hints.append(
+                "[HINT] This run sent images. If the selected model is not a vision (VLM) "
+                "model, that is the likeliest cause - try text-only to confirm."
+            )
         return hints
 
     @staticmethod
@@ -925,17 +954,32 @@ class EALMStudio:
                         troubleshooting_lines.append(
                             f"[ERROR] Generation ended early: {stream_error}"
                         )
+                        # A stream failure is just as worth explaining as one
+                        # raised before generation started - the hints are the
+                        # only place a user learns that, say, this model has no
+                        # vision runtime.
+                        troubleshooting_lines.extend(
+                            self._error_hints(stream_error.lower(), bool(pil_images))
+                        )
                     else:
                         troubleshooting_lines.append("[INFO] Generation complete")
 
                     if stream_error and response is None:
                         # The stream died mid-flight (LM Studio stalled or the
                         # socket dropped). Return what arrived instead of
-                        # discarding it with a bare "Generation failed".
-                        troubleshooting_lines.append(
-                            "[WARNING] Returning the partial text received before the failure"
-                        )
+                        # discarding it with a bare "Generation failed" - but
+                        # only claim partial text when there actually is some,
+                        # otherwise the line contradicts the empty output.
                         fallback_text = native_reasoning + plain_content
+                        if fallback_text:
+                            troubleshooting_lines.append(
+                                "[WARNING] Returning the partial text received before the failure"
+                            )
+                        else:
+                            troubleshooting_lines.append(
+                                "[WARNING] The stream failed before any text arrived - "
+                                "the response output is empty"
+                            )
                         final_response, reasoning = self._split_reasoning(
                             fallback_text,
                             native_reasoning,
@@ -997,7 +1041,9 @@ class EALMStudio:
         except Exception as e:
             error_msg = f"Generation failed: {type(e).__name__}: {e}"
             troubleshooting_lines.append(f"[ERROR] {error_msg}")
-            troubleshooting_lines.extend(self._error_hints(str(e).lower()))
+            troubleshooting_lines.extend(
+                self._error_hints(str(e).lower(), bool(pil_images))
+            )
 
             logger.exception("EA_LMStudio generation error")
             return self._output("", "", troubleshooting_lines)
@@ -1050,7 +1096,17 @@ class EALMStudio:
             error = f"{type(e).__name__}: {e}"
             logger.warning(f"EA_LMStudio: prediction stream ended early - {error}")
 
-        result = None if error is not None else stream.result()
+        result = None
+        if error is None:
+            # .result() is a second failure point, not a formality: it raises if
+            # the socket dropped as the last fragment arrived. Guarding only the
+            # loop would still throw away a full generation right at the finish.
+            try:
+                result = stream.result()
+            except Exception as e:
+                error = f"{type(e).__name__}: {e}"
+                logger.warning(f"EA_LMStudio: prediction result unavailable - {error}")
+
         return result, "".join(reasoning_chunks), "".join(content_chunks), interrupted, error
 
     @staticmethod
