@@ -194,6 +194,25 @@ def test_the_draft_model_is_unloaded_alongside_the_main_model(lm_studio):
     assert namespace.loaded == []
 
 
+def test_custom_model_name_overrides_a_real_dropdown_selection(lm_studio):
+    """2.2.0: the main dropdown no longer lists the sentinel, so filled-in
+    custom text must win over whatever model the dropdown holds."""
+    lm_studio([_ModelHandle("prompt-gen", "pub/repo")])
+
+    result = _run(model_selection="some-other-model", custom_model_name="prompt-gen")
+
+    assert "[INFO] Model: prompt-gen" in _troubleshooting(result)
+
+
+def test_main_dropdown_excludes_the_sentinel_but_draft_keeps_it(monkeypatch):
+    monkeypatch.setattr(_node, "get_model_choices", lambda: [CUSTOM_MODEL_OPTION, "a", "b"])
+    inputs = EALMStudio.INPUT_TYPES()
+    assert inputs["required"]["model_selection"][0] == ["a", "b"]
+    assert inputs["optional"]["draft_model_selection"][0][0] == CUSTOM_MODEL_OPTION
+    # Saved workflows may still hold the sentinel; ComfyUI's list check is skipped.
+    assert EALMStudio.VALIDATE_INPUTS(CUSTOM_MODEL_OPTION) is True
+
+
 def test_a_model_served_under_an_identifier_is_matched_by_its_model_key(lm_studio):
     """The node's widget may hold either name; both must reach the same handle."""
     handle = _ModelHandle("prompt-gen", "pub/repo")

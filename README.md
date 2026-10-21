@@ -57,6 +57,7 @@ Ready-made workflows live in [`example_workflows/`](example_workflows) — drag 
 ## Tips
 
 - **Models not showing?** LM Studio must be running before ComfyUI starts - if it was unreachable at startup, the node warns you once when the page loads. Toggle the `refresh_models` checkbox to instantly re-fetch and update every EA LM Studio node's dropdowns.
+- **Model not in the list?** Type its identifier into `custom_model_name` - when filled in it overrides the dropdown (leave it empty to use the dropdown). Handy when LM Studio's JIT loading is off (only loaded models are listed) or for a specific variant like `name@q4_k_m`. The dropdown holds only real models, so stepping or randomising it with `control_after_generate` always lands on a usable one.
 - **Context errors?** Increase context length in LM Studio settings (not max_tokens). Set `context_overflow` to `Stop at limit (error)` if a silently shortened prompt would be worse than no answer.
 - **VLM issues?** Try a smaller image resize option or a single image if multi-image fails.
 - **Force thinking mode:** Add `/think` to the prompt (Qwen3 family) or "Think step by step" for others. LM Studio's API has no thinking on/off flag — see below.

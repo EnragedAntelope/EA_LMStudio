@@ -20,6 +20,8 @@ import { ComfyWidgets } from "../../scripts/widgets.js";
 const NODE_CLASS = "EA_LMStudio";
 const CUSTOM_MODEL_OPTION = "-- Custom (enter below) --"; // keep in sync with model_fetcher.py
 const PREVIEW_WIDGET_NAME = "response_preview";
+// Node property marking a node as saved under the 2.2.0 rule "custom_model_name overrides".
+const CUSTOM_OVERRIDE_FLAG = "ea_custom_overrides_dropdown";
 
 /*
  * Widget order as serialised by v1.5.x, in LiteGraph order (required first,
@@ -141,6 +143,33 @@ function migrateLegacyWidgetValues(node, widgetValues, defaults) {
 }
 
 /**
+ * One-time fix-up for nodes saved before 2.2.0, when custom_model_name was
+ * read only while model_selection was the "Custom" sentinel. It now overrides
+ * the dropdown whenever filled in, and the sentinel left the main dropdown.
+ *   - A real model selected beside leftover text: the text was ignored, so it
+ *     is cleared - otherwise it would silently replace the selected model.
+ *   - The sentinel selected: moved to the first real model so stepping and
+ *     randomising work. Any custom text still wins, so behaviour is unchanged.
+ * Keyed on the SAVED properties: nodeCreated has already flagged this instance.
+ */
+function migrateCustomOverride(node, info) {
+    if (info?.properties?.[CUSTOM_OVERRIDE_FLAG]) return;
+    node.properties = node.properties ?? {};
+    node.properties[CUSTOM_OVERRIDE_FLAG] = true;
+
+    const model = node.widgets?.find((w) => w.name === "model_selection");
+    const custom = node.widgets?.find((w) => w.name === "custom_model_name");
+    if (!model || !custom) return;
+
+    if (model.value === CUSTOM_MODEL_OPTION) {
+        const firstReal = (model.options?.values ?? []).find((v) => v !== CUSTOM_MODEL_OPTION);
+        if (firstReal) model.value = firstReal;
+    } else if (String(custom.value ?? "").trim()) {
+        custom.value = "";
+    }
+}
+
+/**
  * Grow a node that is stored smaller than its widgets need.
  *
  * A workflow stores the node's size, and LiteGraph restores it verbatim - it
@@ -200,7 +229,7 @@ function getPreviewWidget(node) {
  * widgets we touch and leave every other instance's dropdown stale. Returns
  * the selections that no longer exist and were therefore reset.
  */
-function applyModelChoices(choices) {
+function applyModelChoices(models) {
     const dropped = [];
     let nodes = [];
     try {
@@ -208,8 +237,14 @@ function applyModelChoices(choices) {
     } catch {
         nodes = [];
     }
+    // Same lists INPUT_TYPES builds: the main dropdown holds models only (the
+    // sentinel is a placeholder when there are none), the draft one keeps it as "off".
+    const listFor = {
+        model_selection: models.length ? models : [CUSTOM_MODEL_OPTION],
+        draft_model_selection: [CUSTOM_MODEL_OPTION, ...models],
+    };
     for (const n of nodes) {
-        for (const widgetName of ["model_selection", "draft_model_selection"]) {
+        for (const [widgetName, choices] of Object.entries(listFor)) {
             const w = n.widgets?.find((ww) => ww.name === widgetName);
             if (!w || !w.options || !Array.isArray(w.options.values)) continue;
             w.options.values.length = 0;
@@ -236,6 +271,7 @@ app.registerExtension({
             onConfigure?.apply(this, arguments);
             try {
                 migrateLegacyWidgetValues(this, info?.widgets_values, defaults);
+                migrateCustomOverride(this, info);
             } catch (err) {
                 console.error("[EA_LMStudio] Legacy workflow migration failed:", err);
             }
@@ -275,6 +311,9 @@ app.registerExtension({
 
     async nodeCreated(node) {
         if (node.comfyClass !== NODE_CLASS) return;
+        // New nodes start under the current rule; loaded ones are re-checked in onConfigure.
+        node.properties = node.properties ?? {};
+        node.properties[CUSTOM_OVERRIDE_FLAG] = true;
 
         const refreshWidget = node.widgets?.find((w) => w.name === "refresh_models");
         if (!refreshWidget) return;
@@ -294,8 +333,7 @@ app.registerExtension({
                 const data = await resp.json();
 
                 if (data.success && data.models) {
-                    const choices = [CUSTOM_MODEL_OPTION, ...data.models];
-                    const dropped = applyModelChoices(choices);
+                    const dropped = applyModelChoices(data.models);
 
                     toast("success", "LM Studio models refreshed", data.message);
                     if (dropped.length > 0) {
@@ -303,7 +341,7 @@ app.registerExtension({
                         // say so instead of silently resetting them.
                         toast(
                             "warn",
-                            "Stale model selections reset to Custom",
+                            "Stale model selections reset",
                             `${dropped.join(", ")} - pick from the refreshed list.`
                         );
                     }

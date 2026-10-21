@@ -248,10 +248,13 @@ class EALMStudio:
     @classmethod
     def INPUT_TYPES(cls):
         model_choices = get_model_choices()
-        # Default to a real model when discovery worked, so a freshly dropped
-        # node is runnable instead of landing on the "Custom" sentinel with an
-        # empty identifier. The draft dropdown keeps the sentinel: speculative
-        # decoding must stay opt-in.
+        # The main dropdown holds real models only, so a combo stepped or
+        # randomised by control_after_generate never lands on the sentinel.
+        # custom_model_name overrides it instead. The sentinel stays only as a
+        # placeholder when discovery found nothing (a combo cannot be empty).
+        main_choices = [m for m in model_choices if m != CUSTOM_MODEL_OPTION] or [CUSTOM_MODEL_OPTION]
+        # The draft dropdown keeps the sentinel: it means "off", and
+        # speculative decoding must stay opt-in.
         default_model = get_default_model_choice()
 
         return {
@@ -268,13 +271,13 @@ class EALMStudio:
                     "tooltip": "The user prompt to send to the LLM. This is your main request or question."
                 }),
                 # --- Model selection ---
-                "model_selection": (model_choices, {
+                "model_selection": (main_choices, {
                     "default": default_model,
-                    "tooltip": "Select a model from LM Studio. Models are fetched at ComfyUI startup. Select 'Custom' to manually enter a model identifier."
+                    "tooltip": "Select a model from LM Studio. Models are fetched at ComfyUI startup; toggle refresh_models to re-fetch. Ignored when custom_model_name is filled in."
                 }),
                 "custom_model_name": ("STRING", {
                     "default": "",
-                    "tooltip": "Manual model identifier. Only used when 'Custom' is selected above. Find identifiers in LM Studio's model list."
+                    "tooltip": "Manual model identifier. When filled in, it OVERRIDES model_selection - leave empty to use the dropdown. Useful for models LM Studio does not list (e.g. not loaded with JIT loading off) or a specific variant like name@q4_k_m."
                 }),
                 # --- Generation parameters ---
                 "max_tokens": ("INT", {
@@ -406,6 +409,18 @@ class EALMStudio:
                 }),
             }
         }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, model_selection):
+        """Skip ComfyUI's value-in-list check for model_selection only.
+
+        Workflows saved before 2.2.0 (including API-format ones) may still hold
+        the "Custom" sentinel, which the main dropdown no longer lists, and a
+        workflow shared from another machine names models this server never
+        listed. generate() validates the identifier itself and reports a model
+        LM Studio cannot load, so letting the value through loses nothing.
+        """
+        return True
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
@@ -791,7 +806,11 @@ class EALMStudio:
                 + ", ".join(repr(m) for m in rejected)
             )
 
-        # Resolve main model
+        # Resolve main model. A filled-in custom name wins over the dropdown,
+        # which no longer offers the "Custom" sentinel (saved 2.1.x workflows
+        # may still carry it; it resolves the same way).
+        if custom_model_name and custom_model_name.strip():
+            model_selection = CUSTOM_MODEL_OPTION
         model_identifier, error = self._resolve_model_identifier(
             model_selection, custom_model_name, "model"
         )
