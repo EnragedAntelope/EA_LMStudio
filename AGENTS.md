@@ -8,9 +8,9 @@ inside the node.
 
 ## Current state
 
-_Last verified: 2026-08-24_
+_Last verified: 2026-10-20_
 
-- **Status:** v2.1.0, published to the Comfy Registry from `main` on every
+- **Status:** v2.2.0, published to the Comfy Registry from `main` on every
   `pyproject.toml` version change.
 - **Works:** model discovery + refresh (background-thread startup fetch, a
   live refresh API route with a same-origin guard, and a GET status route
@@ -20,7 +20,7 @@ _Last verified: 2026-08-24_
   context-overflow policy, speculative decoding with acceptance stats,
   cancellable streaming that preserves partial output if the stream dies,
   confirmed VRAM unload of the LLM, the draft model and ComfyUI's own
-  models, silent migration of workflows saved by 1.x, and an optional
+  models, silent migration of workflows saved by 1.x and 2.1.x, and an optional
   `api_token` for authenticated servers (config file or env; REST always,
   SDK generation needs lmstudio>=1.6).
 - **In progress:** nothing outstanding.
@@ -104,6 +104,17 @@ widget ComfyUI inserts after an INT named `seed`) and writes values onto current
 widgets **by name**, which is why v2.0.0 could both drop two widgets and regroup
 the rest. Any future removal or reorder needs the same treatment, and the legacy
 order table must be kept.
+
+**The main model dropdown must never contain the "Custom" sentinel (2.2.0).**
+Users step or randomise it with `control_after_generate`, and landing on the
+sentinel produced an empty run. A non-empty `custom_model_name` overrides the
+dropdown instead; the draft dropdown keeps the sentinel because there it means
+"off". `VALIDATE_INPUTS(model_selection)` skips ComfyUI's value-in-list check so
+pre-2.2.0 saves (and API-format prompts) holding the sentinel still validate.
+`migrateCustomOverride` in the frontend runs once per node lacking the
+`ea_custom_overrides_dropdown` property: it clears custom text that sat beside a
+real selection (it was ignored before and would now win) and moves a saved
+sentinel to the first real model. It is silent on purpose - no toast.
 
 **A stored node size is restored verbatim and is not re-checked against the
 widgets.** Adding a widget therefore leaves every previously saved workflow too
