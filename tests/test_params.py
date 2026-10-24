@@ -1,4 +1,6 @@
 """Tests for lms_params: widget strings -> LM Studio prediction config values."""
+import json
+
 import pytest
 
 from lms_params import (
@@ -9,9 +11,45 @@ from lms_params import (
     missing_config_keys,
     parse_json_schema,
     parse_stop_strings,
+    reorder_json_to_schema,
     strip_json_code_fence,
     unescape_stop_string,
 )
+
+
+# --- reorder_json_to_schema -----------------------------------------------
+
+_ORDER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "zebra": {"type": "string"},
+        "nested": {
+            "type": "object",
+            "properties": {"b": {"type": "integer"}, "a": {"type": "integer"}},
+        },
+        "items": {
+            "type": "array",
+            "items": {"type": "object", "properties": {"y": {}, "x": {}}},
+        },
+    },
+}
+
+
+def test_reorder_restores_schema_order_recursively():
+    sorted_text = '{"items": [{"x": 1, "y": 2}], "nested": {"a": 1, "b": 2}, "zebra": "z", "extra": 0}'
+    text, changed = reorder_json_to_schema(sorted_text, _ORDER_SCHEMA)
+    assert changed
+    assert "\n" not in text  # one-line input stays one line
+    out = json.loads(text)
+    assert list(out) == ["zebra", "nested", "items", "extra"]  # unknown keys kept, last
+    assert list(out["nested"]) == ["b", "a"]
+    assert list(out["items"][0]) == ["y", "x"]
+
+
+def test_reorder_leaves_in_order_or_unparseable_text_untouched():
+    in_order = '{"zebra": "z",  "nested": {"b": 2, "a": 1}}'
+    assert reorder_json_to_schema(in_order, _ORDER_SCHEMA) == (in_order, False)
+    assert reorder_json_to_schema("not json", _ORDER_SCHEMA) == ("not json", False)
 
 
 # --- parse_stop_strings ---------------------------------------------------

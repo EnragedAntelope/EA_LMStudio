@@ -64,7 +64,9 @@ Ready-made workflows live in [`example_workflows/`](example_workflows) — drag 
 - **Thinking leaking into the response?** LM Studio splits reasoning from the answer only when the model's **Reasoning Parsing** delimiters are configured. Set them in LM Studio (per model) and the node uses that split directly. Otherwise it falls back to tag detection, and reports it when a tagless `Thinking Process:` preamble appears to have leaked through.
 - **Reducing repetition:** Raise `repeat_penalty` (1.1-1.3) and/or use `min_p` (0.05-0.1) as a modern alternative to `top_p`. LM Studio has no presence or frequency penalty.
 - **Guaranteed parseable output:** Set `output_format` to `JSON (schema below)` and supply a schema. `JSON (no schema)` only *asks* for JSON — it does not constrain decoding, and many models answer with a ```` ```json ```` fenced block (the node unwraps that automatically when the contents are valid JSON).
+- **JSON key order:** the `lmstudio` Python SDK sorts every key in the request, including your schema's `properties`, so the model *generates* fields in alphabetical order. The node rewrites the response back into the schema's order (and says so in `troubleshooting`), which keeps prompt-as-JSON models such as FIBO happy. If one field should be decided before another (a summary written after the details, say), name the fields so they sort that way.
 - **Speculative decoding not helping?** The troubleshooting output reports the draft-token acceptance rate. Below ~30% the draft model is usually costing more than it saves.
+- **Draft / MTP set up in LM Studio:** leave the node's draft model off and LM Studio uses the model's own draft or MTP setting. Picking a draft in the node overrides it for that run.
 - **Wiring `prompt` from another node** (prompt-enhancer chains): right-click the widget and choose **Convert Widget to Input** - ComfyUI turns any widget into a connectable socket, no special node support needed.
 - **Generation ended early / timed out?** If LM Studio sends no data for ~60s the SDK aborts with a timeout. Usually the model is still loading or the server is busy - retry. Partial output received before the failure is returned rather than thrown away.
 
@@ -108,7 +110,7 @@ Exclude models from the dropdown by adding patterns to `lms_config/user_config.j
 - The `user_config.json` file is gitignored so your settings survive updates.
 - Restart ComfyUI or toggle the **refresh_models** checkbox after changing patterns.
 
-A model whose identifier contains characters the node will not accept (LM Studio occasionally serves ids like `some-model@?`) is hidden from the dropdown and named in the `troubleshooting` output, so it is never a silent disappearance.
+A model whose identifier contains characters the node will not accept (LM Studio occasionally serves ids like `some-model@?`) is hidden from the dropdown and named in the `troubleshooting` output, so it is never a silent disappearance. An id ending in `@?` is normal: it is a companion file whose quantization LM Studio could not name, typically the MTP/draft head that sits beside a model, and LM Studio pairs it with that model itself. Nothing needs fixing.
 
 ## Outputs
 

@@ -8,9 +8,9 @@ inside the node.
 
 ## Current state
 
-_Last verified: 2026-10-20_
+_Last verified: 2026-10-23_
 
-- **Status:** v2.2.0, published to the Comfy Registry from `main` on every
+- **Status:** v2.2.1, published to the Comfy Registry from `main` on every
   `pyproject.toml` version change.
 - **Works:** model discovery + refresh (background-thread startup fetch, a
   live refresh API route with a same-origin guard, and a GET status route
@@ -28,12 +28,26 @@ _Last verified: 2026-10-20_
   SDK (`FileHandle` has no delete in 1.5.0 - LM Studio retains uploads until
   its own cleanup); tool/function calling (`.act()`), GBNF grammars and
   load-time `seed` are supported by the SDK and not exposed; the SDK's load
-  config has no `ttl` field in 1.5.0. There is no automated frontend test —
+  config has no `ttl` field in 1.5.0. LM Studio's REST `/api/v1/models` now
+  reports a per-model reasoning on/off capability, but SDK 1.5.0 (latest on
+  PyPI as of 2026-10-23) has no prediction key for it, and MCP servers are
+  reachable only through LM Studio's REST chat API, not the SDK - neither is
+  exposed. There is no automated frontend test -
   `web/ea_lmstudio.js` is verified by hand in a browser, though the
   JS/Python `CUSTOM_MODEL_OPTION` sync and route paths ARE unit-tested.
   Vision generation is exercised end-to-end only by hand against a real VLM;
   the suite covers `_prepare_images` (temp file written, uploaded, removed)
   but stops at the SDK boundary.
+- **Recheck when a new `lmstudio` SDK ships** (`pip index versions lmstudio`;
+  last checked 2026-10-23, newest 1.5.0): (1) a reasoning on/off key in
+  `LlmPredictionConfigDict` - if present, expose it as a widget; (2) MCP or
+  integrations support in the SDK; (3) whether `to_builtins(order=
+  "deterministic")` in `lmstudio/schemas.py` still sorts schema keys - if
+  not, `reorder_json_to_schema` becomes a harmless no-op and the "generates
+  alphabetically" tooltip/README note should go. Moving generation to LM
+  Studio's REST API would get (1) and (2) today, but loses the SDK's typed
+  reasoning fragments, cancel, applied-config check and unload helpers -
+  rejected 2026-10-23 for that reason.
 - **Deep docs:** user-facing behaviour lives in `README.md`; nothing is
   duplicated here.
 
@@ -165,6 +179,19 @@ model can surface as `No engine protocol runtime is registered for '<id>'`,
 which reads like an internal fault. Both spellings are covered; the observed
 alternative is `image input is not supported ... you may need to provide the
 mmproj`.
+
+**The SDK sorts the JSON schema's keys, so the model writes fields
+alphabetically.** Every outbound message goes through msgspec
+`to_builtins(order="deterministic")` (`lmstudio/schemas.py`), which sorts all
+dict keys, `properties` included. Measured 2026-10-23: the same schema over
+LM Studio's REST `/v1/chat/completions` keeps schema order, over the SDK it
+comes back sorted. `reorder_json_to_schema` restores schema order after the
+reasoning split; it cannot change the order the model *decided* fields in.
+
+**An id ending `@?` is a companion file, not a broken model.** LM Studio
+lists an MTP/draft head beside its main model with quantization `?` (arch
+e.g. `gemma4-assistant`); `/api/v1/models` omits it entirely. It fails
+`validate_model_identifier` and is reported as normal, not as a problem.
 
 **`{"type": "json"}` without a schema does not constrain decoding.** Models
 routinely answer with a ```` ```json ```` fence. Only `jsonSchema` constrains the

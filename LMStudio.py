@@ -5,6 +5,7 @@ Provides text generation using local LLM/VLM models via LM Studio server.
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 import inspect
+import json
 import os
 import threading
 import time
@@ -50,6 +51,7 @@ from .lms_params import (
     build_structured_setting,
     missing_config_keys,
     parse_stop_strings,
+    reorder_json_to_schema,
     strip_json_code_fence,
 )
 from .lms_image import convert_image_to_pil
@@ -353,7 +355,7 @@ class EALMStudio:
                 "json_schema": ("STRING", {
                     "multiline": True,
                     "default": "",
-                    "tooltip": "JSON Schema object, used only when output_format is 'JSON (schema below)'. Example: {\"type\": \"object\", \"properties\": {\"caption\": {\"type\": \"string\"}}, \"required\": [\"caption\"]}"
+                    "tooltip": "JSON Schema object, used only when output_format is 'JSON (schema below)'. Example: {\"type\": \"object\", \"properties\": {\"caption\": {\"type\": \"string\"}}, \"required\": [\"caption\"]}. Note: the lmstudio SDK sorts schema keys, so the model GENERATES fields in alphabetical order; the response is rewritten back into your schema's order afterwards (for prompt-as-JSON models like FIBO). If one field should be decided before another, name them so they sort that way."
                 }),
                 # --- Reasoning extraction ---
                 "reasoning_mode": (REASONING_MODE_OPTIONS, {
@@ -388,7 +390,7 @@ class EALMStudio:
                 # --- Speculative decoding ---
                 "draft_model_selection": (model_choices, {
                     "default": CUSTOM_MODEL_OPTION,
-                    "tooltip": "Optional draft model for speculative decoding (faster inference). Must share a tokenizer with the main model. Leave on 'Custom' with an empty box to disable. Acceptance stats are reported in troubleshooting."
+                    "tooltip": "Optional draft model for speculative decoding (faster inference). Must share a tokenizer with the main model. Leave on 'Custom' with an empty box to disable - LM Studio then uses whatever draft / MTP setting the model has in LM Studio itself. Acceptance stats are reported in troubleshooting."
                 }),
                 "custom_draft_model": ("STRING", {
                     "default": "",
@@ -667,17 +669,35 @@ class EALMStudio:
 
             troubleshooting_lines.extend(EALMStudio._stats_lines(response.stats, elapsed))
 
+            # Split reasoning from the answer first: the SDK's own parse
+            # (response.structured) runs on thinking + answer together, so it
+            # reports "not JSON" for every reasoning model.
+            final_response, reasoning = EALMStudio._split_reasoning(
+                response_text,
+                native_reasoning,
+                plain_content,
+                reasoning_mode,
+                custom_open_tag,
+                custom_close_tag,
+                troubleshooting_lines,
+            )
+
             if structured:
-                if response.structured:
+                try:
+                    json.loads(final_response)
+                    parses = True
+                except ValueError:
+                    parses = False
+                if parses:
                     troubleshooting_lines.append("[INFO] Structured output: valid JSON")
                 else:
                     # "JSON (no schema)" does not constrain decoding, so models
                     # commonly answer with a ```json fenced block. Unwrapping it
                     # (only when the contents really parse) is the difference
                     # between a usable output and one no downstream node can read.
-                    unfenced, stripped = strip_json_code_fence(response_text)
+                    unfenced, stripped = strip_json_code_fence(final_response)
                     if stripped:
-                        response_text = unfenced
+                        final_response = unfenced
                         troubleshooting_lines.append(
                             "[INFO] Structured output: removed a ```json code fence - "
                             "the response is valid JSON underneath"
@@ -688,26 +708,26 @@ class EALMStudio:
                         )
                         if getattr(response.stats, "stop_reason", None) == MAX_TOKENS_STOP_REASON:
                             troubleshooting_lines.append(
-                                "[HINT] The response hit max_tokens mid-object, so the JSON is "
-                                "truncated. Raise max_tokens."
+                                "[HINT] The response hit max_tokens before the JSON was "
+                                "finished (thinking models spend tokens on reasoning first). "
+                                "Raise max_tokens."
                             )
-                        else:
+                        elif not structured.get("jsonSchema"):
                             troubleshooting_lines.append(
                                 "[HINT] 'JSON (no schema)' asks for JSON but does not constrain "
                                 "decoding. Use 'JSON (schema below)' with an explicit schema when "
                                 "a downstream node has to parse the response."
                             )
 
-            # Split reasoning from the answer.
-            final_response, reasoning = EALMStudio._split_reasoning(
-                response_text,
-                native_reasoning,
-                plain_content,
-                reasoning_mode,
-                custom_open_tag,
-                custom_close_tag,
-                troubleshooting_lines,
-            )
+            if structured and structured.get("jsonSchema"):
+                final_response, reordered = reorder_json_to_schema(
+                    final_response, structured["jsonSchema"]
+                )
+                if reordered:
+                    troubleshooting_lines.append(
+                        "[INFO] Structured output: restored the schema's key order "
+                        "(the lmstudio SDK sorts schema keys, so the model wrote them alphabetically)"
+                    )
 
             if reasoning:
                 troubleshooting_lines.append(f"[INFO] Extracted reasoning: {len(reasoning)} chars")
@@ -799,11 +819,22 @@ class EALMStudio:
         # usually cannot act on, and repeating it as a WARNING every single run
         # would just train people to ignore the warning prefix.
         rejected = get_last_rejected_models()
-        if rejected:
+        # "@?" = LM Studio could not name the file's quantization; in practice a
+        # draft/MTP head stored beside its main model, not a model to run.
+        companions = [m for m in rejected if m.endswith("@?")]
+        others = [m for m in rejected if not m.endswith("@?")]
+        if companions:
             troubleshooting_lines.append(
-                f"[INFO] {len(rejected)} model(s) hidden from the dropdown - "
+                "[INFO] Not offered in the dropdown (normal, nothing to fix): "
+                + ", ".join(repr(m) for m in companions)
+                + " - '@?' marks a companion file such as an MTP/draft head, which "
+                "LM Studio pairs with its main model itself"
+            )
+        if others:
+            troubleshooting_lines.append(
+                f"[INFO] {len(others)} model(s) hidden from the dropdown - "
                 "LM Studio reported an identifier with unsupported characters: "
-                + ", ".join(repr(m) for m in rejected)
+                + ", ".join(repr(m) for m in others)
             )
 
         # Resolve main model. A filled-in custom name wins over the dropdown,
@@ -1151,7 +1182,13 @@ class EALMStudio:
             )
             # plain_content is the same text minus the reasoning; prefer it, but
             # fall back to the full content if the backend sent no plain fragments.
-            answer = plain_content.strip() or response_text.strip()
+            answer = plain_content.strip()
+            if not answer:
+                answer = response_text.strip()
+                troubleshooting_lines.append(
+                    "[WARNING] The model produced reasoning but no answer, so the response "
+                    "repeats the reasoning. If the stop reason is max tokens, raise max_tokens."
+                )
             return answer, native_reasoning.strip()
 
         if reasoning_mode == "Auto-detect (recommended)":
