@@ -89,14 +89,43 @@ def test_finalize_splits_tags_when_auto_mode_is_on():
     assert final == "answer"
 
 
+def test_finalize_restores_schema_key_order():
+    schema = {"type": "object", "properties": {"zebra": {}, "apple": {}}}
+    text = '{"apple": 1, "zebra": 2}'
+    lines = []
+    final, _ = _run_finalize(
+        _response(text, structured=True),
+        text,
+        structured={"type": "json", "jsonSchema": schema},
+        troubleshooting_lines=lines,
+    )
+    assert final.index('"zebra"') < final.index('"apple"')
+    assert any("restored the schema's key order" in line for line in lines)
+
+
+def test_finalize_checks_json_after_native_reasoning_split():
+    """The SDK parses thinking + answer together and reports 'not JSON'."""
+    lines = []
+    final, reasoning = _run_finalize(
+        _response("hmm...{\"a\": 1}", structured=False),
+        "hmm...{\"a\": 1}",
+        structured={"type": "json", "jsonSchema": {"type": "object"}},
+        native_reasoning="hmm...",
+        plain_content='{"a": 1}',
+        troubleshooting_lines=lines,
+    )
+    assert (final, reasoning) == ('{"a": 1}', "hmm...")
+    assert "[INFO] Structured output: valid JSON" in lines
+    assert not any("did not parse" in line for line in lines)
+
+
 def test_finalize_degrades_to_raw_text_when_post_processing_raises():
     """A crash AFTER generation must not discard what the model produced."""
 
     class _RaisingResponse:
         content = "precious text"
-        stats = _Stats()
         prediction_config = None
-        structured = property(lambda self: (_ for _ in ()).throw(RuntimeError("garbage")))
+        stats = property(lambda self: (_ for _ in ()).throw(RuntimeError("garbage")))
 
     lines = []
     final, reasoning = _run_finalize(

@@ -158,6 +158,38 @@ def strip_json_code_fence(text: str) -> Tuple[str, bool]:
     return inner, True
 
 
+def _order_like_schema(value: Any, schema: Any) -> Any:
+    if isinstance(value, dict) and isinstance(schema, dict) and isinstance(schema.get("properties"), dict):
+        props = schema["properties"]
+        ordered = {k: _order_like_schema(value[k], props[k]) for k in props if k in value}
+        ordered.update((k, v) for k, v in value.items() if k not in ordered)
+        return ordered
+    if isinstance(value, list) and isinstance(schema, dict) and isinstance(schema.get("items"), dict):
+        return [_order_like_schema(v, schema["items"]) for v in value]
+    return value
+
+
+def reorder_json_to_schema(text: str, schema: Any) -> Tuple[str, bool]:
+    """Put a JSON response's object keys back into the schema's property order.
+
+    The lmstudio SDK serialises requests with msgspec ``order="deterministic"``,
+    which sorts every dict key - the schema's ``properties`` included - so the
+    model is constrained to emit keys alphabetically. Prompt-as-JSON consumers
+    (FIBO) depend on the order. Returns ``(text, changed)``; text that does not
+    parse, or is already in order, comes back untouched.
+    """
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return text, False
+    ordered = _order_like_schema(parsed, schema)
+    # dict == ignores order, so compare the serialised forms.
+    if json.dumps(ordered) == json.dumps(parsed):
+        return text, False
+    # Keep the model's layout: multi-line in, 2-space indented out; one line in, one line out.
+    return json.dumps(ordered, indent=2 if "\n" in text.strip() else None, ensure_ascii=False), True
+
+
 def missing_config_keys(
     requested: Dict[str, Any], applied: Dict[str, Any]
 ) -> List[str]:
