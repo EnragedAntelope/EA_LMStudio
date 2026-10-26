@@ -1,20 +1,23 @@
 [project]
 name = "EA_LMStudio"
 description = "Fully-featured LM Studio integration for ComfyUI: model discovery, vision, reasoning extraction, and full sampler control."
-version = "2.2.1"
+version = "2.3.0"
 license = {file = "LICENSE"}
-# The lmstudio SDK itself declares Requires-Python >=3.10, so 3.9 was never
-# actually installable regardless of what this said.
-requires-python = ">=3.10"
+# 3.11: Pillow 13.0.0, the first release clearing the CVEs found against 12.x,
+# requires it. Python 3.10 reached end-of-life in October 2026.
+requires-python = ">=3.11"
 dependencies = [
     # LlmPredictionFragment.reasoning_type (LM Studio's own reasoning split) and
     # PredictionResult.prediction_config (the applied-config check) are read
     # defensively, so an older SDK degrades to tag-regex extraction rather than
     # failing. Verified present from 1.0.1 onwards.
     "lmstudio>=1.0.0",
-    "requests>=2.27.0",
-    "Pillow>=9.0.0",
-    "numpy>=1.21.0",
+    # Floors are security floors: each is the first release clearing the known
+    # CVEs in the one before (weekly CI audit checks them). Keep in step with
+    # requirements.txt.
+    "requests>=2.33.0",
+    "Pillow>=13.0.0",
+    "numpy>=1.22.0",
 ]
 
 [project.urls]

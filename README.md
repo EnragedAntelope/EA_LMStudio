@@ -37,7 +37,7 @@ pip install -r EA_LMStudio/requirements.txt
 ## Requirements
 
 - **LM Studio** with the local server enabled. Validated against **LM Studio 0.4.19**.
-- The **`lmstudio`** Python package (installed via `requirements.txt`). Requires Python 3.10+.
+- The **`lmstudio`** Python package (installed via `requirements.txt`). Requires Python 3.11+.
 
 > **Keep LM Studio and the `lmstudio` package updated.** The SDK discards prediction parameters it does not recognise instead of raising, so an out-of-date package can turn a setting into a silent no-op. The node now compares what it sent against the config LM Studio echoes back and reports any parameter that was dropped, in the `troubleshooting` output.
 

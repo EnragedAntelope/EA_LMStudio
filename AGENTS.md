@@ -8,9 +8,10 @@ inside the node.
 
 ## Current state
 
-_Last verified: 2026-10-23_
+_Last verified: 2026-10-26_
 
-- **Status:** v2.2.1, published to the Comfy Registry from `main` on every
+- **Status:** v2.3.0 (Python 3.11+, dependency floors raised to clear known
+  CVEs, weekly CI dependency audit), published to the Comfy Registry from `main` on every
   `pyproject.toml` version change.
 - **Works:** model discovery + refresh (background-thread startup fetch, a
   live refresh API route with a same-origin guard, and a GET status route
@@ -65,7 +66,12 @@ install is never shadowed, and registers the repo root as a synthetic package so
 `LMStudio.py` (which uses relative imports) is importable without the checkout
 having to be named `EA_LMStudio`.
 
-CI runs both commands on Python 3.10 and 3.13 (`.github/workflows/test.yml`).
+CI runs both commands on Python 3.11 and 3.13 (`.github/workflows/test.yml`).
+The same workflow has an `audit` job (pip-audit on the resolved versions and on
+each `>=` floor pinned exactly), and a weekly schedule that runs only that job:
+a Monday failure with no new commits means a new advisory against a floor.
+Raise the floor in both `requirements.txt` and `pyproject.toml`, and check the
+fixed version's `requires_python` first (Pillow 13 is why 3.10 was dropped).
 The `pyflakes` step is not decoration: 2.1.0 development deleted
 `from tempfile import NamedTemporaryFile` while leaving the call in place, and
 the whole suite stayed green because nothing reached the image-upload path.
