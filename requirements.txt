@@ -1,4 +1,7 @@
 lmstudio>=1.0.0
-requests>=2.27.0
-Pillow>=9.0.0
-numpy>=1.21.0
+# Security floors: pip never upgrades an installed package that still meets
+# its floor, so these are what long-lived installs run. Keep in step with
+# pyproject.toml; the weekly CI audit flags a floor with known CVEs.
+requests>=2.33.0
+Pillow>=13.0.0
+numpy>=1.22.0
