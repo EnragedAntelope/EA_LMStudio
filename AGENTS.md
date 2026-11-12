@@ -8,11 +8,12 @@ inside the node.
 
 ## Current state
 
-_Last verified: 2026-10-26_
+_Last verified: 2026-11-11_
 
-- **Status:** v2.3.0 (Python 3.11+, dependency floors raised to clear known
-  CVEs, weekly CI dependency audit), published to the Comfy Registry from `main` on every
-  `pyproject.toml` version change.
+- **Status:** v2.4.0 (`enabled` passthrough toggle, `prompt` moved to input
+  0 so bypass passes it through; Python 3.11+, weekly CI dependency audit),
+  published to the Comfy Registry from `main` on every `pyproject.toml`
+  version change.
 - **Works:** model discovery + refresh (background-thread startup fetch, a
   live refresh API route with a same-origin guard, and a GET status route
   the frontend uses to warn when LM Studio was unreachable at startup),
@@ -21,7 +22,8 @@ _Last verified: 2026-10-26_
   context-overflow policy, speculative decoding with acceptance stats,
   cancellable streaming that preserves partial output if the stream dies,
   confirmed VRAM unload of the LLM, the draft model and ComfyUI's own
-  models, silent migration of workflows saved by 1.x and 2.1.x, and an optional
+  models, an `enabled` toggle that skips LM Studio and passes `prompt`
+  through, silent migration of workflows saved by 1.x and 2.0-2.3, and an optional
   `api_token` for authenticated servers (config file or env; REST always,
   SDK generation needs lmstudio>=1.6).
 - **In progress:** nothing outstanding.
@@ -124,6 +126,20 @@ widget ComfyUI inserts after an INT named `seed`) and writes values onto current
 widgets **by name**, which is why v2.0.0 could both drop two widgets and regroup
 the rest. Any future removal or reorder needs the same treatment, and the legacy
 order table must be kept.
+
+**`prompt` must stay the first STRING input (2.4.0).** A bypassed node feeds
+each output from an input: same slot index if the type fits, else the first
+input of the target's type (frontend `_getBypassSlotIndex`, checked in 1.57).
+Socket-only inputs (the four IMAGEs) sit at slots 0-3 ahead of every widget
+input, so `response` reaches a STRING target such as CLIP Text Encode through
+the first STRING input - which was `system_message` before 2.4.0. A `*`
+target (Preview Any) resolves to slot 0 = `image1` and gets nothing; that
+cannot be fixed from here, hence the `enabled` toggle. 2.4.0 also had to
+reorder widgets, so `migratePromptFirst` remaps saves lacking the
+`ea_prompt_first` property by name from the `V2_ORDER` table. Keep that table.
+Saved `inputs` arrays in the old order are re-sorted by the frontend on load
+(verified in a browser), so old workflows bypass correctly too. `enabled` is
+optional, not required, so old API-format prompts still validate.
 
 **The main model dropdown must never contain the "Custom" sentinel (2.2.0).**
 Users step or randomise it with `control_after_generate`, and landing on the

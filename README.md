@@ -67,6 +67,7 @@ Ready-made workflows live in [`example_workflows/`](example_workflows) — drag 
 - **JSON key order:** the `lmstudio` Python SDK sorts every key in the request, including your schema's `properties`, so the model *generates* fields in alphabetical order. The node rewrites the response back into the schema's order (and says so in `troubleshooting`), which keeps prompt-as-JSON models such as FIBO happy. If one field should be decided before another (a summary written after the details, say), name the fields so they sort that way.
 - **Speculative decoding not helping?** The troubleshooting output reports the draft-token acceptance rate. Below ~30% the draft model is usually costing more than it saves.
 - **Draft / MTP set up in LM Studio:** leave the node's draft model off and LM Studio uses the model's own draft or MTP setting. Picking a draft in the node overrides it for that run.
+- **Turning a prompt enhancer off:** untick `enabled` and the node skips LM Studio and outputs `prompt` unchanged as `response` (instant, nothing loaded). Muting the node breaks the link instead, and because this is an output node ComfyUI runs it even when nothing downstream needs it. Bypass (Ctrl+B) also passes `prompt` through when `prompt` is a connected input and `response` feeds a text input such as CLIP Text Encode; a "show anything" preview node instead gets nothing, so prefer `enabled`.
 - **Wiring `prompt` from another node** (prompt-enhancer chains): right-click the widget and choose **Convert Widget to Input** - ComfyUI turns any widget into a connectable socket, no special node support needed.
 - **Generation ended early / timed out?** If LM Studio sends no data for ~60s the SDK aborts with a timeout. Usually the model is still loading or the server is busy - retry. Partial output received before the failure is returned rather than thrown away.
 
@@ -121,6 +122,10 @@ A model whose identifier contains characters the node will not accept (LM Studio
 | troubleshooting | Status messages, debug hints, and inference stats (tokens/sec, input/output/total tokens, time to first token, stop reason, speculative-decoding acceptance, total time) |
 
 The response also renders inside the node itself, so a preview node is optional.
+
+## Upgrading to 2.4
+
+2.4.0 moved `prompt` above `system_message` (so bypass passes your prompt through) and added the `enabled` toggle. Workflows saved by 2.0-2.3 are realigned silently on load; API-format prompts need no change, since `enabled` is optional and defaults to on.
 
 ## Upgrading from 1.x
 
