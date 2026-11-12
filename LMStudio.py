@@ -261,16 +261,19 @@ class EALMStudio:
 
         return {
             "required": {
-                # --- Prompts first ---
+                # --- Prompts first. prompt must stay input 0: a bypassed node
+                # (Ctrl+B) feeds output 0 (response) from input 0, so this
+                # order makes bypass pass the user's text through. Moving it
+                # needs a widgets_values migration in web/ea_lmstudio.js. ---
+                "prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "The user prompt to send to the LLM. This is your main request or question. Passed through unchanged as the response when 'enabled' is off or the node is bypassed (Ctrl+B) with prompt connected."
+                }),
                 "system_message": ("STRING", {
                     "multiline": True,
                     "default": "You are a helpful assistant.",
                     "tooltip": "System prompt that defines the LLM's role and behavior. Sets the context for all responses."
-                }),
-                "prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": "The user prompt to send to the LLM. This is your main request or question."
                 }),
                 # --- Model selection ---
                 "model_selection": (main_choices, {
@@ -309,6 +312,12 @@ class EALMStudio:
             # control that switches them on, and every dependent field's tooltip
             # names that control, so the layout reads top-to-bottom.
             "optional": {
+                # Optional, not required: API-format prompts saved before it
+                # existed must still validate.
+                "enabled": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Off = skip LM Studio entirely and pass prompt through unchanged as the response (reasoning stays empty). The on/off switch for a prompt-enhancer: this is an output node, so ComfyUI runs it even when nothing downstream needs it, and muting it breaks the link."
+                }),
                 # --- Sampling parameters ---
                 "top_p": ("FLOAT", {
                     "default": 1.0,
@@ -774,7 +783,8 @@ class EALMStudio:
         custom_close_tag: str = "</think>",
         unload_llm: bool = True,
         unload_comfy_models: bool = False,
-        refresh_models: bool = False
+        refresh_models: bool = False,
+        enabled: bool = True,
     ) -> Dict[str, Any]:
         """
         Generate text using LM Studio.
@@ -783,6 +793,11 @@ class EALMStudio:
             A ComfyUI node result dict carrying both the (response, reasoning,
             troubleshooting) tuple and the ``ui`` payload rendered in the node.
         """
+        if not enabled:
+            return self._output(
+                prompt, "", ["[INFO] Disabled - prompt passed through unchanged, LM Studio not contacted"]
+            )
+
         troubleshooting_lines: List[str] = []
 
         # Get current config (read the file once and derive everything from it)

@@ -242,3 +242,19 @@ def test_keeping_the_model_warm_leaves_it_loaded(lm_studio):
 
     assert handle.direct_unload_calls == 0
     assert namespace.loaded == [handle]
+
+
+def test_disabled_passes_the_prompt_through_without_contacting_lm_studio(monkeypatch):
+    """The enhancer on/off switch: no client, no unload, prompt out unchanged."""
+    monkeypatch.setattr(_node, "lms", None)  # any SDK use would raise
+
+    result = _run(enabled=False, prompt="  a cat  ")
+
+    assert result["result"][:2] == ("  a cat  ", "")
+    assert result["ui"]["text"] == ["  a cat  "]
+    assert "Disabled" in _troubleshooting(result)
+
+
+def test_prompt_is_input_zero_so_bypass_passes_it_through():
+    """A bypassed node feeds output 0 (response) from input 0."""
+    assert next(iter(EALMStudio.INPUT_TYPES()["required"])) == "prompt"

@@ -15,6 +15,8 @@ import { ComfyWidgets } from "../../scripts/widgets.js";
  *                       LM Studio SDK silently discarded them, so every widget
  *                       after them would otherwise load one or two slots out of
  *                       alignment. See migrateLegacyWidgetValues below.
+ *                       2.4.0 moved prompt first and added `enabled`; saves
+ *                       from 2.0-2.3 are remapped by migratePromptFirst.
  */
 
 const NODE_CLASS = "EA_LMStudio";
@@ -66,6 +68,46 @@ const LEGACY_ORDER_WITH_SEED_CONTROL = [
 // v1.x values of the removed enable_thinking widget. Used to confirm an array of
 // the right length really is a legacy layout before rewriting anything.
 const LEGACY_ENABLE_THINKING_VALUES = ["Model default", "Enabled", "Disabled"];
+
+/*
+ * Widget order serialised by 2.0.0 - 2.3.x. 2.4.0 moved prompt to input 0 (so
+ * a bypassed node passes the prompt through) and added `enabled` after seed.
+ * Nodes saved before 2.4.0 lack the PROMPT_FIRST_FLAG property and are
+ * remapped by name from this table. Keep it, like LEGACY_ORDER.
+ */
+const V2_ORDER = [
+    "system_message",
+    "prompt",
+    "model_selection",
+    "custom_model_name",
+    "max_tokens",
+    "temperature",
+    "seed",
+    "top_p",
+    "top_k",
+    "repeat_penalty",
+    "min_p",
+    "stop_strings",
+    "context_overflow",
+    "output_format",
+    "json_schema",
+    "reasoning_mode",
+    "custom_open_tag",
+    "custom_close_tag",
+    "image_resize",
+    "draft_model_selection",
+    "custom_draft_model",
+    "unload_llm",
+    "unload_comfy_models",
+    "refresh_models",
+];
+const V2_ORDER_WITH_SEED_CONTROL = [
+    ...V2_ORDER.slice(0, 7),
+    "control_after_generate",
+    ...V2_ORDER.slice(7),
+];
+// Node property marking a node as saved in the 2.4.0 prompt-first order.
+const PROMPT_FIRST_FLAG = "ea_prompt_first";
 
 function toast(severity, summary, detail) {
     const manager = app.extensionManager?.toast;
@@ -120,6 +162,44 @@ function migrateLegacyWidgetValues(node, widgetValues, defaults) {
     const enableThinkingValue = widgetValues[order.indexOf("enable_thinking")];
     if (!LEGACY_ENABLE_THINKING_VALUES.includes(enableThinkingValue)) return false;
 
+    remapByName(node, order, widgetValues, defaults);
+
+    // No toast on purpose: the realignment is silent housekeeping, and a
+    // banner on every v1 workflow load was noise users just clicked away.
+    // The boolean return stays - it is this function's documented contract
+    // and the only way a caller can tell a migration from a no-op.
+    return true;
+}
+
+/**
+ * Repair widget values saved by 2.0.0 - 2.3.x (system_message first, no
+ * `enabled`). Gated on the saved properties lacking PROMPT_FIRST_FLAG, plus a
+ * shape check, so a current save is never touched. Silent, like the v1 path.
+ */
+function migratePromptFirst(node, info, defaults) {
+    const saved = info?.properties?.[PROMPT_FIRST_FLAG];
+    node.properties = node.properties ?? {};
+    node.properties[PROMPT_FIRST_FLAG] = true;
+    if (saved) return false;
+
+    const values = info?.widgets_values;
+    if (!Array.isArray(values)) return false;
+    const order = [V2_ORDER, V2_ORDER_WITH_SEED_CONTROL].find((o) => o.length === values.length);
+    if (!order) return false;
+    const isBool = (name) => typeof values[order.indexOf(name)] === "boolean";
+    if (!isBool("unload_llm") || !isBool("unload_comfy_models") || !isBool("refresh_models")) return false;
+    if (order === V2_ORDER_WITH_SEED_CONTROL && typeof values[7] !== "string") return false;
+
+    remapByName(node, order, values, defaults);
+    return true;
+}
+
+/**
+ * Write saved values onto the current widget of the same name; widgets the
+ * saved layout did not have get their declared default (they currently hold
+ * whatever value landed at their index).
+ */
+function remapByName(node, order, widgetValues, defaults) {
     const byName = {};
     order.forEach((name, index) => {
         byName[name] = widgetValues[index];
@@ -130,16 +210,9 @@ function migrateLegacyWidgetValues(node, widgetValues, defaults) {
         if (Object.prototype.hasOwnProperty.call(byName, widget.name)) {
             widget.value = byName[widget.name];
         } else if (Object.prototype.hasOwnProperty.call(defaults, widget.name)) {
-            // New in v2.0.0 - it holds a shifted v1 value right now.
             widget.value = defaults[widget.name];
         }
     }
-
-    // No toast on purpose: the realignment is silent housekeeping, and a
-    // banner on every v1 workflow load was noise users just clicked away.
-    // The boolean return stays - it is this function's documented contract
-    // and the only way a caller can tell a migration from a no-op.
-    return true;
 }
 
 /**
@@ -270,7 +343,13 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function (info) {
             onConfigure?.apply(this, arguments);
             try {
-                migrateLegacyWidgetValues(this, info?.widgets_values, defaults);
+                // A v1 remap is by name onto the current order, so it never also
+                // needs the 2.x one (and their array lengths cannot coincide).
+                if (!migrateLegacyWidgetValues(this, info?.widgets_values, defaults)) {
+                    migratePromptFirst(this, info, defaults);
+                } else {
+                    this.properties[PROMPT_FIRST_FLAG] = true;
+                }
                 migrateCustomOverride(this, info);
             } catch (err) {
                 console.error("[EA_LMStudio] Legacy workflow migration failed:", err);
@@ -314,6 +393,7 @@ app.registerExtension({
         // New nodes start under the current rule; loaded ones are re-checked in onConfigure.
         node.properties = node.properties ?? {};
         node.properties[CUSTOM_OVERRIDE_FLAG] = true;
+        node.properties[PROMPT_FIRST_FLAG] = true;
 
         const refreshWidget = node.widgets?.find((w) => w.name === "refresh_models");
         if (!refreshWidget) return;
