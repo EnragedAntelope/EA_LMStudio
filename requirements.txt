@@ -1,4 +1,4 @@
-lmstudio>=1.0.0
+lmstudio>=1.5.0,<2
 # Security floors: pip never upgrades an installed package that still meets
 # its floor, so these are what long-lived installs run. Keep in step with
 # pyproject.toml; the weekly CI audit flags a floor with known CVEs.

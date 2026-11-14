@@ -173,7 +173,7 @@ def test_stream_preserves_partial_output_when_it_dies_midflight(monkeypatch):
     )
     monkeypatch.setattr(_node, "ProgressBar", None, raising=False)
 
-    model = SimpleNamespace(respond_stream=lambda chat, config=None: _DyingStream())
+    model = SimpleNamespace(respond_stream=lambda chat, config=None, **_: _DyingStream())
     result, native, plain, interrupted, error = EALMStudio()._stream(model, None, {}, 16)
 
     assert result is None
@@ -199,13 +199,52 @@ def test_stream_still_reports_clean_finishes(monkeypatch):
         def result(self):
             return _response("done")
 
-    model = SimpleNamespace(respond_stream=lambda chat, config=None: _Stream())
+    model = SimpleNamespace(respond_stream=lambda chat, config=None, **_: _Stream())
     result, _, plain, interrupted, error = EALMStudio()._stream(model, None, {}, 16)
 
     assert error is None
     assert interrupted is False
     assert plain == "done"
     assert result.content == "done"
+
+
+def test_cancel_works_during_prompt_processing(monkeypatch):
+    """No fragments arrive while LM Studio reads the prompt, so the
+    per-fragment check alone left cancel dead until the first token."""
+    monkeypatch.setattr(
+        _node.model_management, "processing_interrupted", lambda: True, raising=False
+    )
+    monkeypatch.setattr(_node, "ProgressBar", None, raising=False)
+
+    class _Stream:
+        def __init__(self, on_progress):
+            self.on_progress = on_progress
+            self.cancel_calls = 0
+
+        def __iter__(self):
+            self.on_progress(0.5)  # the SDK fires this mid-iteration
+            if self.cancel_calls:
+                return
+            yield _Fragment("should not arrive")  # pragma: no cover
+
+        def cancel(self):
+            self.cancel_calls += 1
+
+        def result(self):
+            return _response("")
+
+    holder = {}
+
+    def respond_stream(chat, config=None, on_prompt_processing_progress=None):
+        holder["stream"] = _Stream(on_prompt_processing_progress)
+        return holder["stream"]
+
+    model = SimpleNamespace(respond_stream=respond_stream)
+    _, _, plain, interrupted, error = EALMStudio()._stream(model, None, {}, 16)
+
+    assert interrupted is True
+    assert holder["stream"].cancel_calls == 1
+    assert plain == "" and error is None
 
 
 # --- _prepare_images -------------------------------------------------------
@@ -288,7 +327,7 @@ def test_stream_preserves_output_when_result_fails_after_a_clean_drain(monkeypat
     )
     monkeypatch.setattr(_node, "ProgressBar", None, raising=False)
 
-    model = SimpleNamespace(respond_stream=lambda chat, config=None: _StreamWithDeadResult())
+    model = SimpleNamespace(respond_stream=lambda chat, config=None, **_: _StreamWithDeadResult())
     result, native, plain, interrupted, error = EALMStudio()._stream(model, None, {}, 16)
 
     assert result is None

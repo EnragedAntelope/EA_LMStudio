@@ -27,7 +27,6 @@ class ConfigManager:
 
     def __init__(self):
         self.config_dir = Path(__file__).parent
-        self.default_config_path = self.config_dir / "default_config.json"
         self.user_config_path = self.config_dir / "user_config.json"
 
     def get_config(self) -> Dict[str, Any]:
@@ -47,17 +46,25 @@ class ConfigManager:
 
         # Load user overrides if they exist
         if self.user_config_path.exists():
+            # This runs at import: anything raised here hides the node from
+            # ComfyUI. utf-8-sig accepts the BOM Notepad writes; ValueError
+            # covers bad JSON and UnicodeDecodeError (PowerShell 5 saves UTF-16).
             try:
-                with open(self.user_config_path, 'r', encoding='utf-8') as f:
+                with open(self.user_config_path, 'r', encoding='utf-8-sig') as f:
                     user_config = json.load(f)
+                if isinstance(user_config, dict):
                     # Only update with valid keys (ignore unknown keys and comments)
                     for key in DEFAULT_CONFIG.keys():
                         if key in user_config:
                             config[key] = user_config[key]
-                logger.debug(f"Loaded user config from {self.user_config_path}")
-            except json.JSONDecodeError as e:
-                logger.warning(f"Invalid JSON in user_config.json: {e}. Using defaults.")
-            except IOError as e:
+                    logger.debug(f"Loaded user config from {self.user_config_path}")
+                else:
+                    logger.warning("user_config.json is not a JSON object. Using defaults.")
+            except ValueError as e:
+                logger.warning(
+                    f"Invalid user_config.json ({e}). Save it as UTF-8 JSON. Using defaults."
+                )
+            except OSError as e:
                 logger.warning(f"Could not read user_config.json: {e}. Using defaults.")
 
         return config
@@ -82,6 +89,11 @@ class ConfigManager:
         text = text.split("/", 1)[0].split("?", 1)[0]
 
         port: Optional[int] = None
+        # Bracketed IPv6 with a port, "[::1]:1234": the brackets stay on the host.
+        if text.startswith("[") and "]:" in text:
+            candidate_host, _, candidate_port = text.rpartition(":")
+            if candidate_port.isdigit():
+                return candidate_host, int(candidate_port)
         if text.count(":") == 1:
             candidate_host, _, candidate_port = text.partition(":")
             if candidate_port.isdigit() and candidate_host:
@@ -175,12 +187,17 @@ class ConfigManager:
             config = self.get_config()
         raw = config.get("timeout_seconds", 5)
         try:
-            return float(raw)
+            value = float(raw)
         except (TypeError, ValueError):
+            value = 0.0
+        # requests rejects 0 and negative timeouts with a ValueError that the
+        # fetcher would misreport as "Invalid JSON".
+        if not value > 0:
             logger.warning(
-                f"timeout_seconds in user_config.json is not a number ({raw!r}). Using default 5."
+                f"timeout_seconds in user_config.json must be a positive number ({raw!r}). Using default 5."
             )
             return 5.0
+        return value
 
     def get_excluded_patterns(self, config: Optional[Dict[str, Any]] = None) -> List[str]:
         """Get model exclusion patterns from config.
@@ -232,16 +249,3 @@ class ConfigManager:
                 logger.info(f"Created user config template at {self.user_config_path}")
             except IOError as e:
                 logger.warning(f"Could not create user_config.json template: {e}")
-
-    def ensure_default_config_exists(self) -> None:
-        """Create default config file if missing (for reference)."""
-        if not self.default_config_path.exists():
-            try:
-                reference = {
-                    "_comment": "Default configuration reference. Do not edit. Create user_config.json to override.",
-                    **DEFAULT_CONFIG
-                }
-                with open(self.default_config_path, 'w', encoding='utf-8') as f:
-                    json.dump(reference, f, indent=2)
-            except IOError:
-                pass  # Non-critical

@@ -40,8 +40,9 @@ def resize_image(pil_image: Image.Image, max_dimension: Optional[int]) -> Image.
 
     # Calculate new dimensions preserving aspect ratio
     scale = max_dimension / max_current
-    new_width = int(width * scale)
-    new_height = int(height * scale)
+    # max(1, ...): a very thin strip would otherwise round to 0 and raise.
+    new_width = max(1, int(width * scale))
+    new_height = max(1, int(height * scale))
 
     # Use LANCZOS for high-quality downscaling
     return pil_image.resize((new_width, new_height), Image.LANCZOS)
