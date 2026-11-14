@@ -86,3 +86,9 @@ def test_convert_applies_resize():
     pil = convert_image_to_pil(_tensor(2000, 1000, 3), max_dimension=512)
     assert pil is not None
     assert max(pil.size) == 512
+
+
+def test_resize_thin_strip_keeps_at_least_one_pixel():
+    """4000x2 scaled to 512 rounded the height to 0 and Pillow raised."""
+    out = resize_image(Image.new("RGB", (4000, 2)), 512)
+    assert out.size == (512, 1)

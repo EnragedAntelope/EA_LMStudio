@@ -3,6 +3,10 @@
 All getters accept a pre-loaded config dict, so these tests exercise the
 merge/derivation logic without touching the filesystem.
 """
+import json
+
+import pytest
+
 from lms_config.config_manager import ConfigManager
 
 
@@ -158,3 +162,43 @@ def test_bare_host_still_uses_server_port():
 def test_junk_port_inside_the_host_is_not_treated_as_a_port():
     cfg = {"server_host": "host:notaport", "server_port": 1234}
     assert _cm().get_server_url(cfg) == "http://host:notaport:1234"
+
+
+def test_bracketed_ipv6_with_port_does_not_double_the_port():
+    cfg = {"server_host": "http://[::1]:5000", "server_port": 1234}
+    assert _cm().get_server_url(cfg) == "http://[::1]:5000"
+    assert _cm().get_server_address(cfg) == "[::1]:5000"
+
+
+def test_timeout_zero_or_negative_falls_back_to_default():
+    """requests raises ValueError on these, which the fetcher reported as bad JSON."""
+    assert _cm().get_timeout({"timeout_seconds": 0}) == 5.0
+    assert _cm().get_timeout({"timeout_seconds": -1}) == 5.0
+
+
+# --- get_config reads the file at import; a raise there hides the node ---
+
+@pytest.mark.parametrize(
+    "payload, expected_port",
+    [
+        ('{"server_port": 4321}'.encode("utf-8-sig"), 4321),  # Notepad BOM
+        ('{"server_port": 4321}'.encode("utf-16"), 1234),  # PowerShell 5 redirect
+        (b"null", 1234),
+        (b"5", 1234),
+        (b"[]", 1234),
+        (b"{not json", 1234),
+    ],
+)
+def test_get_config_never_raises_on_a_bad_user_file(tmp_path, payload, expected_port):
+    cm = _cm()
+    cm.user_config_path = tmp_path / "user_config.json"
+    cm.user_config_path.write_bytes(payload)
+    assert cm.get_config()["server_port"] == expected_port
+
+
+def test_shipped_default_config_matches_defaults():
+    from lms_config.config_manager import DEFAULT_CONFIG
+
+    shipped = json.loads((_cm().config_dir / "default_config.json").read_text(encoding="utf-8"))
+    shipped.pop("_comment")
+    assert shipped == DEFAULT_CONFIG

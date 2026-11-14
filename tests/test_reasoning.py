@@ -151,3 +151,17 @@ def test_plain_english_mentioning_response_is_not_split():
     assert resp == text
     assert reasoning == ""
     assert pattern is None
+
+
+def test_unclosed_open_tag_is_reasoning_not_response():
+    """Out of tokens mid-thought: no close tag, so nothing matched and the raw
+    thinking went downstream as the answer (e.g. into CLIP Text Encode)."""
+    resp, reasoning, pattern = extract_reasoning_auto("  <think>still thinking when tokens ran out")
+    assert resp == ""
+    assert reasoning == "still thinking when tokens ran out"
+    assert pattern is not None and "no close tag" in pattern
+
+
+def test_open_tag_mid_answer_without_close_is_left_alone():
+    text = "Use the <think> tag to mark reasoning."
+    assert extract_reasoning_auto(text) == (text, "", None)

@@ -67,7 +67,7 @@ class _ModelHandle:
         self._fail = fail
         self.direct_unload_calls = 0
 
-    def respond_stream(self, chat, config=None):
+    def respond_stream(self, chat, config=None, **_):
         if self._fail is not None:
             raise self._fail
         return _Stream("hello")

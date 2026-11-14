@@ -8,19 +8,21 @@ inside the node.
 
 ## Current state
 
-_Last verified: 2026-11-11_
+_Last verified: 2026-11-14_
 
-- **Status:** v2.4.0 (`enabled` passthrough toggle, `prompt` moved to input
-  0 so bypass passes it through; Python 3.11+, weekly CI dependency audit),
-  published to the Comfy Registry from `main` on every `pyproject.toml`
-  version change.
+- **Status:** main is v2.4.1 (audit fixes: a bad `user_config.json` no
+  longer hides the node, unclosed `<think>` goes to reasoning, cancel works
+  during prompt processing; `lmstudio>=1.5.0,<2`). Published to the Comfy
+  Registry from `main` on every `pyproject.toml` version change.
 - **Works:** model discovery + refresh (background-thread startup fetch, a
   live refresh API route with a same-origin guard, and a GET status route
   the frontend uses to warn when LM Studio was unreachable at startup),
   text generation, multi-image VLM input, reasoning extraction (LM Studio's
   own split, with tag-regex fallback), structured JSON output, stop strings,
   context-overflow policy, speculative decoding with acceptance stats,
-  cancellable streaming that preserves partial output if the stream dies,
+  cancellable streaming (including during prompt processing, via the SDK's
+  `on_prompt_processing_progress` callback; model load is not cancellable)
+  that preserves partial output if the stream dies,
   confirmed VRAM unload of the LLM, the draft model and ComfyUI's own
   models, an `enabled` toggle that skips LM Studio and passes `prompt`
   through, silent migration of workflows saved by 1.x and 2.0-2.3, and an optional
@@ -42,7 +44,10 @@ _Last verified: 2026-11-11_
   the suite covers `_prepare_images` (temp file written, uploaded, removed)
   but stops at the SDK boundary.
 - **Recheck when a new `lmstudio` SDK ships** (`pip index versions lmstudio`;
-  last checked 2026-10-23, newest 1.5.0): (1) a reasoning on/off key in
+  last checked 2026-11-14, newest 1.5.0). The dependency is capped `<2`: a
+  2.x release needs a live run before the cap moves, because the node relies
+  on stream cancel, `reasoning_type` fragments and the progress callback.
+  Also check: (1) a reasoning on/off key in
   `LlmPredictionConfigDict` - if present, expose it as a widget; (2) MCP or
   integrations support in the SDK; (3) whether `to_builtins(order=
   "deterministic")` in `lmstudio/schemas.py` still sorts schema keys - if

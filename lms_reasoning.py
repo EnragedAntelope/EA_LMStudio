@@ -175,6 +175,13 @@ def extract_reasoning_auto(text: str) -> Tuple[str, str, Optional[str]]:
                     # tagged text through as the response.
                     return "", reasoning, f"{close_tag} (missing open tag, response truncated)"
 
+    # Open tag with no close tag: the model ran out of tokens mid-thought.
+    # Passing it through would hand raw thinking to the next node as the answer.
+    stripped = text.lstrip()
+    for _, open_tag, close_tag in COMMON_REASONING_PATTERNS:
+        if stripped.startswith(open_tag) and close_tag not in text:
+            return "", stripped[len(open_tag):].strip(), f"{open_tag} (no close tag, response truncated)"
+
     # No pattern matched
     return text, "", None
 

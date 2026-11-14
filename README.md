@@ -16,7 +16,7 @@ _Vision: captioning an image with a VLM into schema-constrained JSON that downst
 - **Vision Support** - Up to 4 image inputs with smart auto-resize to prevent OOM
 - **Reasoning Extraction** - Uses LM Studio's own reasoning split when the model has Reasoning Parsing configured, and falls back to tag detection (DeepSeek R1, Qwen3, QwQ, GLM, GPT-OSS "harmony" channels, and similar) when it does not
 - **Structured JSON Output** - Constrain decoding to a JSON Schema so downstream nodes can parse the response
-- **Cancellable & Streamed** - ComfyUI's cancel button really stops a runaway generation, and the queue progress bar tracks tokens instead of the node looking frozen. If the connection to LM Studio dies mid-generation, everything received so far is returned instead of discarded
+- **Cancellable & Streamed** - ComfyUI's cancel button really stops a runaway generation, including while LM Studio is still reading a long prompt (only the model load itself cannot be interrupted), and the queue progress bar tracks tokens instead of the node looking frozen. If the connection to LM Studio dies mid-generation, everything received so far is returned instead of discarded
 - **In-Node Response Preview** - The generated text appears inside the node; no extra preview node required
 - **Advanced Controls** - Temperature, top-k/p, min-p, repetition penalty, stop strings, context-overflow policy, speculative decoding
 - **Honest Diagnostics** - Every parameter is checked against the config LM Studio reports back, so a setting that silently does nothing is reported instead of hidden
@@ -37,7 +37,7 @@ pip install -r EA_LMStudio/requirements.txt
 ## Requirements
 
 - **LM Studio** with the local server enabled. Validated against **LM Studio 0.4.19**.
-- The **`lmstudio`** Python package (installed via `requirements.txt`). Requires Python 3.11+.
+- The **`lmstudio`** Python package, 1.5 or newer but below 2.0 (installed via `requirements.txt`). Requires Python 3.11+.
 
 > **Keep LM Studio and the `lmstudio` package updated.** The SDK discards prediction parameters it does not recognise instead of raising, so an out-of-date package can turn a setting into a silent no-op. The node now compares what it sent against the config LM Studio echoes back and reports any parameter that was dropped, in the `troubleshooting` output.
 
@@ -109,6 +109,7 @@ Exclude models from the dropdown by adding patterns to `lms_config/user_config.j
 - Use specific enough patterns to avoid accidentally excluding desired models (e.g., use `Qwen3-Coder` instead of just `coder`).
 - To find exact model names, check LM Studio's API: `http://127.0.0.1:1234/v1/models` (look at the `id` field).
 - The `user_config.json` file is gitignored so your settings survive updates.
+- Save it as UTF-8 (a BOM is fine). A file that does not parse as a JSON object is ignored with a console warning, and the defaults are used.
 - Restart ComfyUI or toggle the **refresh_models** checkbox after changing patterns.
 
 A model whose identifier contains characters the node will not accept (LM Studio occasionally serves ids like `some-model@?`) is hidden from the dropdown and named in the `troubleshooting` output, so it is never a silent disappearance. An id ending in `@?` is normal: it is a companion file whose quantization LM Studio could not name, typically the MTP/draft head that sits beside a model, and LM Studio pairs it with that model itself. Nothing needs fixing.

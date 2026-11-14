@@ -111,7 +111,6 @@ _quiet_dependency_logs()
 # Initialize configuration and model cache at module load
 _config_manager = ConfigManager()
 _config_manager.create_user_config_template()
-_config_manager.ensure_default_config_exists()
 
 # Fetch models at startup in a daemon thread.
 #
@@ -1135,8 +1134,20 @@ class EALMStudio:
         reasoning_chunks: List[str] = []
         content_chunks: List[str] = []
         tokens_seen = 0
+        stream = None
 
-        stream = model.respond_stream(chat, config=gen_config)
+        def check_interrupt(_progress=None):
+            nonlocal interrupted
+            if not interrupted and stream is not None and model_management.processing_interrupted():
+                stream.cancel()
+                interrupted = True
+
+        # Prompt processing (long prompts, images) sends no fragments, so the
+        # per-fragment check alone left cancel dead until the first token. The
+        # SDK calls this back from inside the iteration below, on this thread.
+        stream = model.respond_stream(
+            chat, config=gen_config, on_prompt_processing_progress=check_interrupt
+        )
         # Note: the stream must be drained rather than broken out of. Breaking
         # closes the underlying generator and .result() then raises GeneratorExit;
         # cancel() ends it promptly with stop_reason "userStopped" instead.
@@ -1154,9 +1165,7 @@ class EALMStudio:
                 if pbar is not None:
                     pbar.update_absolute(min(tokens_seen, max_tokens), max_tokens)
 
-                if not interrupted and model_management.processing_interrupted():
-                    stream.cancel()
-                    interrupted = True
+                check_interrupt()
         except Exception as e:
             error = f"{type(e).__name__}: {e}"
             logger.warning(f"EA_LMStudio: prediction stream ended early - {error}")
