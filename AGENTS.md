@@ -10,10 +10,11 @@ inside the node.
 
 _Last verified: 2026-11-14_
 
-- **Status:** main is v2.4.1 (audit fixes: a bad `user_config.json` no
-  longer hides the node, unclosed `<think>` goes to reasoning, cancel works
-  during prompt processing; `lmstudio>=1.5.0,<2`). Published to the Comfy
-  Registry from `main` on every `pyproject.toml` version change.
+- **Status:** main is v2.4.2 (Registry description refresh; 2.4.1 carried
+  the audit fixes: a bad `user_config.json` no longer hides the node,
+  unclosed `<think>` goes to reasoning, cancel works during prompt
+  processing; `lmstudio>=1.5.0,<2`). Published to the Comfy Registry from
+  `main` on every `pyproject.toml` version change.
 - **Works:** model discovery + refresh (background-thread startup fetch, a
   live refresh API route with a same-origin guard, and a GET status route
   the frontend uses to warn when LM Studio was unreachable at startup),

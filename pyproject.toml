@@ -1,7 +1,7 @@
 [project]
 name = "EA_LMStudio"
-description = "Fully-featured LM Studio integration for ComfyUI: model discovery, vision, reasoning extraction, and full sampler control."
-version = "2.4.1"
+description = "Run local LLMs and vision models from LM Studio in ComfyUI: prompt enhancing, multi-image captioning, reasoning split from the answer, schema-constrained JSON output, cancellable streaming, and a confirmed VRAM unload before image generation."
+version = "2.4.2"
 license = {file = "LICENSE"}
 # 3.11: Pillow 13.0.0, the first release clearing the CVEs found against 12.x,
 # requires it. Python 3.10 reached end-of-life in October 2026.
