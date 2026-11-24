@@ -9,7 +9,7 @@ import json
 import os
 import threading
 import time
-from tempfile import NamedTemporaryFile
+from io import BytesIO
 from PIL import Image
 
 # LM Studio SDK
@@ -505,26 +505,14 @@ class EALMStudio:
     def _prepare_images(client, pil_images: List[Image.Image]) -> List[Any]:
         """Upload PIL images to LM Studio and return its file handles.
 
-        Each image is written to a temp file, closed, uploaded, then deleted.
-        The file is closed before uploading because on Windows a second reader
-        of a still-open handle is not guaranteed, and deletion of an open file
-        fails outright.
+        Encoded in memory and sent as bytes (the SDK accepts a buffer plus a
+        name), so the user's images never touch the temp directory.
         """
         handles = []
-        for pil_img in pil_images:
-            temp_path = None
-            try:
-                with NamedTemporaryFile(suffix=".jpg", delete=False) as temp:
-                    temp_path = temp.name
-                    pil_img.save(temp, format="JPEG", quality=95)
-                handles.append(client.files.prepare_image(temp_path))
-            finally:
-                if temp_path:
-                    try:
-                        os.unlink(temp_path)
-                    except OSError as e:
-                        # Best effort only; Windows can hold the file briefly.
-                        logger.debug(f"Could not remove temp image {temp_path}: {e}")
+        for idx, pil_img in enumerate(pil_images, start=1):
+            buf = BytesIO()
+            pil_img.save(buf, format="JPEG", quality=95)
+            handles.append(client.files.prepare_image(buf.getvalue(), f"image{idx}.jpg"))
         return handles
 
     @staticmethod
@@ -822,10 +810,11 @@ class EALMStudio:
             else:
                 troubleshooting_lines.append(f"[WARNING] Model refresh failed: {message}")
 
-        # Check for startup fetch errors
+        # A refresh this run already reported its own outcome; otherwise the
+        # last fetch (startup or an earlier refresh) may have failed.
         last_error = get_last_fetch_error()
-        if last_error and not get_last_fetch_success():
-            troubleshooting_lines.append(f"[WARNING] Startup model fetch: {last_error}")
+        if last_error and not get_last_fetch_success() and not refresh_models:
+            troubleshooting_lines.append(f"[WARNING] Last model fetch failed: {last_error}")
 
         # Models LM Studio offered but we could not accept: without this the
         # model just silently isn't in the dropdown and nobody knows why.

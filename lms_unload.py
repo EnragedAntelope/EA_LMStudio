@@ -91,7 +91,7 @@ def unload_llm_instances(
         except Exception as e:
             lines.append(f"[WARNING] Failed to unload {label}: {e}")
 
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     while True:
         try:
             remaining = [label for _, label in _still_loaded()]
@@ -101,7 +101,7 @@ def unload_llm_instances(
         if not remaining:
             lines.append("[INFO] LM Studio confirmed all requested models unloaded")
             return
-        if time.time() >= deadline:
+        if time.monotonic() >= deadline:
             lines.append(
                 f"[WARNING] Still loaded after {timeout:.0f}s: {remaining} - "
                 "VRAM may not be free yet for the next node"
