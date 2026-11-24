@@ -255,6 +255,19 @@ def test_disabled_passes_the_prompt_through_without_contacting_lm_studio(monkeyp
     assert "Disabled" in _troubleshooting(result)
 
 
+def test_a_failed_refresh_is_reported_once_not_as_a_startup_failure(lm_studio, monkeypatch):
+    lm_studio([_ModelHandle("prompt-gen", "pub/repo")])
+    monkeypatch.setattr(_node, "refresh_model_cache", lambda *a, **k: (False, "boom"))
+    monkeypatch.setattr(_node, "get_last_fetch_error", lambda: "boom")
+    monkeypatch.setattr(_node, "get_last_fetch_success", lambda: False)
+
+    text = _troubleshooting(_run(refresh_models=True))
+    assert text.count("boom") == 1
+    assert "Startup" not in text
+    # Without a refresh this run, the standing failure is still surfaced.
+    assert "[WARNING] Last model fetch failed: boom" in _troubleshooting(_run())
+
+
 def test_prompt_is_input_zero_so_bypass_passes_it_through():
     """A bypassed node feeds output 0 (response) from input 0."""
     assert next(iter(EALMStudio.INPUT_TYPES()["required"])) == "prompt"

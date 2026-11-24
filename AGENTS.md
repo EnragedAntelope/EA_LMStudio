@@ -8,9 +8,11 @@ inside the node.
 
 ## Current state
 
-_Last verified: 2026-11-14_
+_Last verified: 2026-11-24_
 
-- **Status:** main is v2.4.2 (Registry description refresh; 2.4.1 carried
+- **Status:** main is v2.4.3 (audit: images upload from memory, never
+  written to %TEMP%; a failed refresh is reported once, not also as a
+  startup failure; unload wait uses a monotonic clock. 2.4.1 carried
   the audit fixes: a bad `user_config.json` no longer hides the node,
   unclosed `<think>` goes to reasoning, cancel works during prompt
   processing; `lmstudio>=1.5.0,<2`). Published to the Comfy Registry from
@@ -42,10 +44,10 @@ _Last verified: 2026-11-14_
   `web/ea_lmstudio.js` is verified by hand in a browser, though the
   JS/Python `CUSTOM_MODEL_OPTION` sync and route paths ARE unit-tested.
   Vision generation is exercised end-to-end only by hand against a real VLM;
-  the suite covers `_prepare_images` (temp file written, uploaded, removed)
+  the suite covers `_prepare_images` (in-memory JPEG bytes uploaded)
   but stops at the SDK boundary.
 - **Recheck when a new `lmstudio` SDK ships** (`pip index versions lmstudio`;
-  last checked 2026-11-14, newest 1.5.0). The dependency is capped `<2`: a
+  last checked 2026-11-24, newest 1.5.0). The dependency is capped `<2`: a
   2.x release needs a live run before the cap moves, because the node relies
   on stream cancel, `reasoning_type` fragments and the progress callback.
   Also check: (1) a reasoning on/off key in

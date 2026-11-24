@@ -251,17 +251,16 @@ def test_cancel_works_during_prompt_processing(monkeypatch):
 #
 # The image-upload path had no test at all, which is how a deleted
 # ``from tempfile import NamedTemporaryFile`` shipped on this branch: every
-# vision run raised NameError while 151 tests stayed green. These pin the
-# whole round trip - temp file written, closed, uploaded, then removed.
+# vision run raised NameError while 151 tests stayed green. This pins the
+# upload: in-memory JPEG bytes plus a name, nothing written to disk.
 
 class _RecordingFiles:
     def __init__(self):
         self.uploaded = []
 
-    def prepare_image(self, path):
-        with open(path, "rb") as fh:
-            assert fh.read(2) == b"\xff\xd8", "uploaded file is not JPEG"
-        self.uploaded.append(path)
+    def prepare_image(self, src, name=None):
+        assert isinstance(src, bytes) and src[:2] == b"\xff\xd8", "upload is not JPEG bytes"
+        self.uploaded.append(name)
         return f"handle:{len(self.uploaded)}"
 
 
@@ -276,34 +275,12 @@ def _pil_image(size=(8, 8)):
     return Image.new("RGB", size, "red")
 
 
-def test_prepare_images_uploads_each_image_and_cleans_up():
-    import os
-
+def test_prepare_images_uploads_each_image_from_memory():
     client = _FilesClient()
     handles = EALMStudio._prepare_images(client, [_pil_image(), _pil_image((4, 4))])
 
     assert handles == ["handle:1", "handle:2"]
-    for path in client.files.uploaded:
-        assert not os.path.exists(path), "temp image was left on disk"
-
-
-def test_prepare_images_removes_the_temp_file_even_when_upload_fails():
-    import os
-
-    seen = []
-
-    class _FailingFiles:
-        def prepare_image(self, path):
-            seen.append(path)
-            raise RuntimeError("upload rejected")
-
-    class _FailingClient:
-        files = _FailingFiles()
-
-    with pytest.raises(RuntimeError):
-        EALMStudio._prepare_images(_FailingClient(), [_pil_image()])
-
-    assert seen and not os.path.exists(seen[0])
+    assert client.files.uploaded == ["image1.jpg", "image2.jpg"]
 
 
 class _StreamWithDeadResult:
